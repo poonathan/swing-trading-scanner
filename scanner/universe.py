@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 _SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+_NDX100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
 
 _POPULAR_WATCHLIST = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO",
@@ -27,6 +28,7 @@ def load_symbols(
     symbols: str = None,
     watchlist_file: str = None,
     sp500: bool = False,
+    nasdaq100: bool = False,
     default: bool = False,
 ) -> List[str]:
     result = []
@@ -43,6 +45,9 @@ def load_symbols(
 
     elif sp500:
         result = _scrape_sp500()
+
+    elif nasdaq100:
+        result = _scrape_nasdaq100()
 
     else:
         result = list(_POPULAR_WATCHLIST)
@@ -92,7 +97,7 @@ def pre_filter(symbols: List[str], config: dict) -> List[str]:
 def _scrape_sp500() -> List[str]:
     try:
         resp = requests.get(_SP500_URL, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(resp.text, "lxml")
+        soup = BeautifulSoup(resp.text, "html.parser")
         table = soup.find("table", {"id": "constituents"})
         if table is None:
             table = soup.find("table", class_="wikitable")
@@ -109,4 +114,39 @@ def _scrape_sp500() -> List[str]:
         return symbols
     except Exception as e:
         logger.error(f"S&P 500 scrape failed: {e}")
+        return list(_POPULAR_WATCHLIST)
+
+
+def _scrape_nasdaq100() -> List[str]:
+    try:
+        resp = requests.get(_NDX100_URL, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        soup = BeautifulSoup(resp.text, "html.parser")
+        # Wikipedia Nasdaq-100 page has a table with id "constituents"
+        table = soup.find("table", {"id": "constituents"})
+        if table is None:
+            # Fallback: find wikitable with "Ticker" in header
+            for t in soup.find_all("table", class_="wikitable"):
+                headers = [th.get_text(strip=True).lower() for th in t.find_all("th")]
+                if any("ticker" in h or "symbol" in h for h in headers):
+                    table = t
+                    break
+        if table is None:
+            logger.error("Could not find Nasdaq-100 table on Wikipedia")
+            return list(_POPULAR_WATCHLIST)
+        symbols = []
+        for row in table.find_all("tr")[1:]:
+            cols = row.find_all("td")
+            if cols:
+                # Ticker is usually first or second column depending on page layout
+                for col in cols[:2]:
+                    text = col.get_text(strip=True).replace(".", "-")
+                    # Valid ticker: 1-5 uppercase letters/digits/hyphen
+                    if text and 1 <= len(text) <= 6 and text.replace("-", "").isalpha():
+                        symbols.append(text.upper())
+                        break
+        symbols = list(dict.fromkeys(symbols))  # deduplicate preserving order
+        logger.info(f"Nasdaq-100: scraped {len(symbols)} symbols")
+        return symbols if len(symbols) >= 50 else list(_POPULAR_WATCHLIST)
+    except Exception as e:
+        logger.error(f"Nasdaq-100 scrape failed: {e}")
         return list(_POPULAR_WATCHLIST)

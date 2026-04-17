@@ -46,6 +46,7 @@ def scan(
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated symbols: AAPL,MSFT,NVDA"),
     watchlist: Optional[str] = typer.Option(None, "--watchlist", "-w", help="Path to .txt file with one symbol per line"),
     sp500: bool = typer.Option(False, "--sp500", help="Scan all S&P 500 stocks"),
+    nasdaq100: bool = typer.Option(False, "--nasdaq100", help="Scan all Nasdaq-100 stocks"),
     min_score: float = typer.Option(58.0, "--min-score", help="Minimum composite score to display"),
     min_correction: float = typer.Option(0.04, "--min-correction", help="Minimum correction % (e.g. 0.05 = 5%)"),
     export: Optional[str] = typer.Option(None, "--export", "-e", help="Export path: results.csv or results.json"),
@@ -60,7 +61,7 @@ def scan(
     config["correction"]["min_drop_pct"] = min_correction
 
     # Load symbols
-    syms = universe.load_symbols(symbols=symbols, watchlist_file=watchlist, sp500=sp500)
+    syms = universe.load_symbols(symbols=symbols, watchlist_file=watchlist, sp500=sp500, nasdaq100=nasdaq100)
     if not syms:
         console.print("[red]No symbols to scan.[/red]")
         raise typer.Exit(1)
