@@ -1001,6 +1001,42 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
     st.divider()
 
+    # ── Risk / Reward calculator ───────────────────────────────────────────────
+    st.subheader("⚖️ Risk / Reward Calculator",
+                 help="Auto-populated from nearest S/R levels. Adjust entry, stop, and target to calculate your trade's risk:reward ratio.")
+    current_px = result.current_price or 0.0
+    nearest_sup = pattern.nearest_support_price
+    nearest_res = pattern.nearest_resistance_price
+    stop_default  = float(nearest_sup)  if nearest_sup else round(current_px * 0.95, 2)
+    target_default = float(nearest_res) if nearest_res else round(current_px * 1.10, 2)
+
+    rr_c1, rr_c2, rr_c3, rr_c4 = st.columns(4)
+    rr_entry  = rr_c1.number_input("Entry ($)", value=float(current_px), min_value=0.0, step=0.01, format="%.2f")
+    rr_stop   = rr_c2.number_input("Stop Loss ($)", value=stop_default,   min_value=0.0, step=0.01, format="%.2f",
+                                   help="Suggested: nearest support below current price")
+    rr_target = rr_c3.number_input("Target ($)",    value=target_default, min_value=0.0, step=0.01, format="%.2f",
+                                   help="Suggested: nearest resistance above current price")
+
+    if rr_entry > 0 and rr_stop > 0 and rr_target > rr_entry > rr_stop:
+        risk   = rr_entry - rr_stop
+        reward = rr_target - rr_entry
+        rr_ratio = reward / risk
+        rr_c4.metric("R:R Ratio", f"{rr_ratio:.1f}:1",
+                     help="Risk:Reward ratio. ≥ 2:1 is generally the minimum for a worthwhile swing trade.")
+        risk_pct   = risk   / rr_entry * 100
+        reward_pct = reward / rr_entry * 100
+        summary = f"Risk **${risk:.2f}** ({risk_pct:.1f}%) · Reward **${reward:.2f}** ({reward_pct:.1f}%)"
+        if rr_ratio >= 2:
+            st.success(f"R:R {rr_ratio:.1f}:1 — favorable setup · {summary}")
+        elif rr_ratio >= 1:
+            st.warning(f"R:R {rr_ratio:.1f}:1 — marginal · {summary}")
+        else:
+            st.error(f"R:R {rr_ratio:.1f}:1 — poor risk/reward, reconsider · {summary}")
+    elif rr_target <= rr_entry or rr_stop >= rr_entry:
+        st.caption("Enter: Stop Loss < Entry < Target to calculate R:R.")
+
+    st.divider()
+
     # ── Dimension score radar ─────────────────────────────────────────────────
     col_radar, col_detail = st.columns([1, 2], gap="large")
 
@@ -1021,7 +1057,9 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
     with col_detail:
         st.subheader("📋 Analysis Detail")
-        tab_fund, tab_tech, tab_corr, tab_news = st.tabs(["Fundamental", "Technical", "Correction", "News"])
+        tab_fund, tab_tech, tab_corr, tab_news, tab_val, tab_analyst, tab_own = st.tabs(
+            ["Fundamental", "Technical", "Correction", "News", "Valuation", "Analyst", "Ownership"]
+        )
 
         with tab_fund:
             if fund:
@@ -1069,6 +1107,78 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                     st.markdown("**Recent headlines:**")
                     for h in news.top_headlines[:4]:
                         st.caption(f"• {h[:90]}")
+
+        with tab_val:
+            info = data.info
+            cols = st.columns(3)
+            cols[0].metric("Trailing P/E", f"{info['trailingPE']:.1f}" if info.get("trailingPE") else "—",
+                           help="Price / trailing 12-month earnings. Compare to sector peers.")
+            cols[1].metric("Forward P/E",  f"{info['forwardPE']:.1f}"  if info.get("forwardPE")  else "—",
+                           help="Price / estimated next-year earnings. < trailing P/E = earnings growing.")
+            cols[2].metric("PEG Ratio",    f"{info['pegRatio']:.2f}"   if info.get("pegRatio")   else "—",
+                           help="P/E divided by earnings growth rate. < 1 = potentially undervalued.")
+            cols2 = st.columns(3)
+            cols2[0].metric("P/B", f"{info['priceToBook']:.2f}" if info.get("priceToBook") else "—",
+                            help="Price / book value. < 1 = trading below book.")
+            cols2[1].metric("EV/EBITDA", f"{info['enterpriseToEbitda']:.1f}" if info.get("enterpriseToEbitda") else "—",
+                            help="Enterprise value to EBITDA. < 10 = generally reasonable valuation.")
+            target_mean = info.get("targetMeanPrice")
+            if target_mean and current_px:
+                upside = (target_mean - current_px) / current_px * 100
+                cols2[2].metric("Analyst Target", f"${target_mean:.2f}",
+                                delta=f"{upside:+.1f}% vs current",
+                                delta_color="normal" if upside >= 0 else "inverse",
+                                help=f"Mean analyst price target. {info.get('numberOfAnalystOpinions', '?')} opinions.")
+            else:
+                cols2[2].metric("Analyst Target", "—")
+
+        with tab_analyst:
+            rs = data.recommendations_summary
+            if rs is not None and not rs.empty:
+                # Most recent period row
+                row = rs.iloc[0]
+                categories_rec = ["strongBuy", "buy", "hold", "sell", "strongSell"]
+                labels_rec     = ["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]
+                colors_rec     = ["#1a7a30", "#4CAF50", "#FF9800", "#e74c3c", "#8b0000"]
+                counts = [int(row.get(c, 0)) for c in categories_rec]
+                fig_rec = go.Figure(go.Bar(
+                    x=labels_rec, y=counts,
+                    marker_color=colors_rec, opacity=0.85,
+                    text=counts, textposition="outside",
+                ))
+                fig_rec.update_layout(height=220, margin=dict(t=10, b=10), showlegend=False,
+                                      yaxis_title="# Analysts")
+                st.plotly_chart(fig_rec, use_container_width=True)
+            else:
+                st.info("No recommendations data available.")
+
+            ud = data.upgrades_downgrades
+            if ud is not None and not ud.empty:
+                st.caption("**Recent upgrades / downgrades**")
+                ud_disp = ud.head(8).reset_index()
+                st.dataframe(ud_disp.style.hide(axis="index"), use_container_width=True, height=220)
+
+        with tab_own:
+            info = data.info
+            ins_pct   = info.get("heldPercentInsiders")
+            inst_pct  = info.get("heldPercentInstitutions")
+            short_pct = info.get("shortPercentOfFloat")
+            short_ratio = info.get("shortRatio")
+            cols = st.columns(4)
+            cols[0].metric("Insider Ownership", f"{ins_pct:.1%}" if ins_pct else "—",
+                           help="% held by insiders (execs, directors). > 5% shows skin in the game.")
+            cols[1].metric("Institutional",     f"{inst_pct:.1%}" if inst_pct else "—",
+                           help="% held by institutions (funds, ETFs). High = stable shareholder base.")
+            cols[2].metric("Short Float %",     f"{short_pct:.1%}" if short_pct else "—",
+                           help="% of float sold short. > 20% = heavily shorted; potential short squeeze fuel.")
+            cols[3].metric("Short Ratio",       f"{short_ratio:.1f}d" if short_ratio else "—",
+                           help="Days to cover at average volume. > 10 days = high short interest.")
+            ih = data.institutional_holders
+            if ih is not None and not ih.empty:
+                st.caption("**Top institutional holders**")
+                ih_cols = [c for c in ("Holder", "Shares", "% Out", "Value") if c in ih.columns]
+                st.dataframe(ih[ih_cols].head(10).style.hide(axis="index"),
+                             use_container_width=True, height=260)
 
 
 def page_deep_dive():

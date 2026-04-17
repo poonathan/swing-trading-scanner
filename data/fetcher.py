@@ -22,6 +22,8 @@ class TickerData:
     news: list = field(default_factory=list)
     upgrades_downgrades: Optional[pd.DataFrame] = None
     calendar: dict = field(default_factory=dict)
+    recommendations_summary: Optional[pd.DataFrame] = None
+    institutional_holders: Optional[pd.DataFrame] = None
 
 
 def fetch(symbol: str, use_cache: bool = True) -> Optional[TickerData]:
@@ -143,6 +145,20 @@ def fetch(symbol: str, use_cache: bool = True) -> Optional[TickerData]:
             data.calendar = cal
         except Exception:
             data.calendar = {}
+
+        # --- recommendations summary ---
+        try:
+            rs = ticker.recommendations_summary
+            data.recommendations_summary = rs if rs is not None and not rs.empty else None
+        except Exception:
+            data.recommendations_summary = None
+
+        # --- institutional holders ---
+        try:
+            ih = ticker.institutional_holders
+            data.institutional_holders = ih if ih is not None and not ih.empty else None
+        except Exception:
+            data.institutional_holders = None
 
         return data
 
