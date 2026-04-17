@@ -2,6 +2,7 @@
 
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -63,13 +64,19 @@ st.markdown("""
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
+_NAV_OPTIONS = ["🏠  Dashboard", "🔍  Scanner", "🔎  Deep Dive", "📊  Trend Tracker", "📋  History", "⭐  Watchlist"]
+
 with st.sidebar:
     st.markdown("## 📈 Swing Scanner")
     st.divider()
 
+    if st.session_state.get("nav_page") not in _NAV_OPTIONS:
+        st.session_state["nav_page"] = _NAV_OPTIONS[0]
+
     page = st.radio(
         "nav",
-        ["🏠  Dashboard", "🔍  Scanner", "🔎  Deep Dive", "📊  Trend Tracker", "📋  History", "⭐  Watchlist"],
+        _NAV_OPTIONS,
+        key="nav_page",
         label_visibility="collapsed",
     )
 
@@ -253,8 +260,9 @@ def page_dashboard():
         st.subheader(f"🟢 BUY DIP Opportunities ({len(buy_dip)})")
         _col_guide()
         if not buy_dip.empty:
+            st.caption("Click any row to open Deep Dive for that stock.")
             disp = _display_cols(buy_dip)
-            st.dataframe(_style_table(disp), use_container_width=True, height=280)
+            _selectable_table(disp, height=280)
         else:
             st.info("No BUY DIP candidates in the latest scan.")
 
@@ -299,8 +307,9 @@ def page_dashboard():
     # WATCH table
     st.subheader(f"🟡 WATCH Candidates ({len(watch)})")
     if not watch.empty:
+        st.caption("Click any row to open Deep Dive for that stock.")
         disp = _display_cols(watch)
-        st.dataframe(_style_table(disp), use_container_width=True, height=320)
+        _selectable_table(disp, height=320)
         _col_guide()
 
 
@@ -454,8 +463,9 @@ def page_scanner():
 
     st.subheader("📊 Results")
     _col_guide()
+    st.caption("Click any row to open Deep Dive for that stock.")
     disp = _display_cols(df)
-    st.dataframe(_style_table(disp), use_container_width=True, height=420)
+    _selectable_table(disp, height=420)
 
     # Quick add to watchlist
     st.divider()
@@ -787,6 +797,29 @@ def page_watchlist():
         st.info("💡 Run a quick rescan of your watchlist from the **🔍 Scanner** page by selecting **Watchlist** as the universe.")
 
 
+def _nav_to_deep_dive(symbol: str):
+    """Navigate to Deep Dive for the given symbol, triggering auto-analysis."""
+    st.session_state["deep_dive_nav_symbol"] = symbol
+    st.session_state["dd_auto_analyze"] = True
+    st.session_state["nav_page"] = "🔎  Deep Dive"
+    st.rerun()
+
+
+def _selectable_table(disp: pd.DataFrame, height: int = 320) -> None:
+    """Render a styled, row-selectable dataframe. Clicking a row navigates to Deep Dive."""
+    event = st.dataframe(
+        _style_table(disp),
+        use_container_width=True,
+        height=height,
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+    if event.selection.rows:
+        sym = disp.iloc[event.selection.rows[0]].get("Symbol", "")
+        if sym:
+            _nav_to_deep_dive(sym)
+
+
 def _wl_simple(wl: pd.DataFrame):
     display = wl.copy()
     display["added_at"] = display["added_at"].str[:10]
@@ -796,44 +829,15 @@ def _wl_simple(wl: pd.DataFrame):
 
 # ── Deep Dive ─────────────────────────────────────────────────────────────────
 
-def page_deep_dive():
-    st.title("🔎 Deep Dive Analysis")
-    st.caption("On-demand full analysis: price chart with S/R levels, pattern detection, and all dimension scores.")
-
-    col_sym, col_btn = st.columns([4, 1])
-    symbol = col_sym.text_input("Symbol", placeholder="NVDA", label_visibility="collapsed").upper().strip()
-    analyze = col_btn.button("🔍 Analyze", use_container_width=True, type="primary")
-
-    if not symbol:
-        st.info("Enter a ticker symbol above and click **Analyze**.")
-        return
-    if not analyze:
-        return
-
-    from data.fetcher import fetch
-    from scanner import correction, fundamental, news_classifier, patterns, scorer, technical
-
-    with st.spinner(f"Fetching and analyzing **{symbol}**…"):
-        deep_cfg = dict(config)
-        deep_cfg["correction"] = dict(config.get("correction", {}))
-        deep_cfg["correction"]["min_drop_pct"] = 0.005  # allow even tiny pullbacks
-
-        data = fetch(symbol, use_cache=False)
-        if data is None:
-            st.error(f"Could not fetch data for **{symbol}**. Check the symbol and try again.")
-            return
-
-        fi = data.fast_info
-        fund        = fundamental.score(data, deep_cfg)
-        corr_result, corr_days = correction.detect(data, deep_cfg)
-        tech        = technical.score(data, deep_cfg, correction_days=corr_days)
-        news        = news_classifier.classify(data, deep_cfg)
-        pattern     = patterns.score(data, deep_cfg)
-        result      = scorer.compute(
-            symbol, fund, tech, corr_result, news, deep_cfg, pattern,
-            fi.get("last_price"), fi.get("year_high"),
-            data.info.get("sector"), data.info.get("industry"),
-        )
+def _render_dd_content(symbol: str, payload: dict) -> None:
+    """Render all Deep Dive sections from a cached analysis payload."""
+    result      = payload["result"]
+    fund        = payload["fund"]
+    tech        = payload["tech"]
+    corr_result = payload["corr_result"]
+    news        = payload["news"]
+    pattern     = payload["pattern"]
+    data        = payload["data"]
 
     # ── Signal banner ─────────────────────────────────────────────────────────
     sig_emoji = _SIG_EMOJI.get(result.signal, "⚪")
@@ -872,7 +876,6 @@ def page_deep_dive():
     col_chart, col_pat = st.columns([3, 1], gap="large")
 
     with col_chart:
-        # Timeline selector
         tf_options = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252}
         tf_key = f"dd_tf_{symbol}"
         if tf_key not in st.session_state:
@@ -894,20 +897,12 @@ def page_deep_dive():
             n_bars = min(tf_bars, len(hist))
             window = hist.iloc[-n_bars:]
             close_full = hist["Close"].astype(float)
-
-            # Compute SMAs on full history then slice to window
             sma50  = close_full.rolling(50).mean().reindex(window.index)
             sma200 = close_full.rolling(200).mean().reindex(window.index)
 
-            # Two-row subplot: price (75%) + volume (25%)
-            fig = make_subplots(
-                rows=2, cols=1,
-                row_heights=[0.75, 0.25],
-                vertical_spacing=0.03,
-                shared_xaxes=True,
-            )
+            fig = make_subplots(rows=2, cols=1, row_heights=[0.75, 0.25],
+                                vertical_spacing=0.03, shared_xaxes=True)
 
-            # Row 1 — Candlestick
             fig.add_trace(go.Candlestick(
                 x=window.index,
                 open=window["Open"], high=window["High"],
@@ -918,61 +913,47 @@ def page_deep_dive():
                 showlegend=False,
             ), row=1, col=1)
 
-            # Row 1 — SMA 50
             sma50_clean = sma50.dropna()
             if not sma50_clean.empty:
                 fig.add_trace(go.Scatter(
-                    x=sma50_clean.index, y=sma50_clean,
-                    mode="lines", name="SMA 50",
+                    x=sma50_clean.index, y=sma50_clean, mode="lines", name="SMA 50",
                     line=dict(color="#FF9800", width=1.5),
                     hovertemplate="SMA50: $%{y:.2f}<extra></extra>",
                 ), row=1, col=1)
 
-            # Row 1 — SMA 200
             sma200_clean = sma200.dropna()
             if not sma200_clean.empty:
                 fig.add_trace(go.Scatter(
-                    x=sma200_clean.index, y=sma200_clean,
-                    mode="lines", name="SMA 200",
+                    x=sma200_clean.index, y=sma200_clean, mode="lines", name="SMA 200",
                     line=dict(color="#9C27B0", width=1.5),
                     hovertemplate="SMA200: $%{y:.2f}<extra></extra>",
                 ), row=1, col=1)
 
-            # Row 1 — S/R lines
             for lv in pattern.sr_levels:
                 if lv.level_type == "support":
-                    color, dash = "#27ae60", "dot"
-                    prefix = "S"
+                    color, dash, prefix = "#27ae60", "dot", "S"
                 elif lv.level_type == "resistance":
-                    color, dash = "#e74c3c", "dot"
-                    prefix = "R"
+                    color, dash, prefix = "#e74c3c", "dot", "R"
                 else:
-                    color, dash = "#f39c12", "dot"
-                    prefix = "S/R"
+                    color, dash, prefix = "#f39c12", "dot", "S/R"
                 label = f"{prefix} ${lv.price:.2f}"
                 if lv.fib_label:
                     label += f" [{lv.fib_label}]"
                     dash = "dashdot"
-                fig.add_hline(
-                    y=lv.price, line_dash=dash, line_color=color, line_width=1.5,
-                    annotation_text=label, annotation_position="right",
-                    annotation_font_size=10, annotation_font_color=color,
-                    row=1, col=1,
-                )
+                fig.add_hline(y=lv.price, line_dash=dash, line_color=color, line_width=1.5,
+                              annotation_text=label, annotation_position="right",
+                              annotation_font_size=10, annotation_font_color=color,
+                              row=1, col=1)
 
-            # Row 1 — Pattern key levels
             for pm in pattern.patterns_detected:
                 if pm.key_price:
                     kcolor = "#8e44ad" if pm.signal == "bullish" else "#c0392b"
-                    fig.add_hline(
-                        y=pm.key_price, line_dash="solid", line_color=kcolor, line_width=2,
-                        annotation_text=f"[{pm.name[:12]}] ${pm.key_price:.2f}",
-                        annotation_position="left",
-                        annotation_font_size=10, annotation_font_color=kcolor,
-                        row=1, col=1,
-                    )
+                    fig.add_hline(y=pm.key_price, line_dash="solid", line_color=kcolor, line_width=2,
+                                  annotation_text=f"[{pm.name[:12]}] ${pm.key_price:.2f}",
+                                  annotation_position="left",
+                                  annotation_font_size=10, annotation_font_color=kcolor,
+                                  row=1, col=1)
 
-            # Row 2 — Volume bars (green up-day, red down-day)
             vol_colors = [
                 "#27ae60" if float(c) >= float(o) else "#e74c3c"
                 for c, o in zip(window["Close"], window["Open"])
@@ -985,17 +966,15 @@ def page_deep_dive():
             ), row=2, col=1)
 
             fig.update_layout(
-                height=540,
-                margin=dict(t=10, b=10, l=10, r=140),
-                hovermode="x unified",
-                plot_bgcolor="white",
+                height=540, margin=dict(t=10, b=10, l=10, r=140),
+                hovermode="x unified", plot_bgcolor="white",
                 legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0),
                 xaxis_rangeslider_visible=False,
             )
             fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=1, col=1)
             fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=2, col=1)
             fig.update_yaxes(title_text="Price ($)", showgrid=True, gridcolor="#f0f0f0", row=1, col=1)
-            fig.update_yaxes(title_text="Volume",   showgrid=False, row=2, col=1)
+            fig.update_yaxes(title_text="Volume", showgrid=False, row=2, col=1)
             st.plotly_chart(fig, use_container_width=True)
 
     with col_pat:
@@ -1016,8 +995,8 @@ def page_deep_dive():
         st.subheader("🔵 S/R Levels",
                      help="Support (green) = price floor the stock tends to bounce from. Resistance (red) = ceiling it tends to stall at. Fibonacci levels are natural retracement zones (38.2%, 50%, 61.8%). Strength = touch count + volume + recency.")
         for lv in pattern.sr_levels[:6]:
-            icon  = "🟢" if lv.level_type == "support" else ("🔴" if lv.level_type == "resistance" else "🟡")
-            fib   = f" `{lv.fib_label}`" if lv.fib_label else ""
+            icon = "🟢" if lv.level_type == "support" else ("🔴" if lv.level_type == "resistance" else "🟡")
+            fib  = f" `{lv.fib_label}`" if lv.fib_label else ""
             st.markdown(f"{icon} **${lv.price:.2f}**{fib}  str={lv.strength:.0f}")
 
     st.divider()
@@ -1030,17 +1009,13 @@ def page_deep_dive():
         categories = ["Fundamental", "Technical", "Correction", "News", "Pattern"]
         values     = [fund.score, tech.score, corr_result.score, news.score, pattern.score]
         fig_r = go.Figure(go.Scatterpolar(
-            r=values + [values[0]],
-            theta=categories + [categories[0]],
-            fill="toself",
-            fillcolor="rgba(33,150,243,0.15)",
-            line=dict(color="#2196F3", width=2),
-            marker=dict(size=6),
+            r=values + [values[0]], theta=categories + [categories[0]],
+            fill="toself", fillcolor="rgba(33,150,243,0.15)",
+            line=dict(color="#2196F3", width=2), marker=dict(size=6),
         ))
         fig_r.update_layout(
             polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-            height=320, margin=dict(t=20, b=10, l=20, r=20),
-            showlegend=False,
+            height=320, margin=dict(t=20, b=10, l=20, r=20), showlegend=False,
         )
         st.plotly_chart(fig_r, use_container_width=True)
 
@@ -1096,9 +1071,86 @@ def page_deep_dive():
                         st.caption(f"• {h[:90]}")
 
 
-# ── Routing ───────────────────────────────────────────────────────────────────
+def page_deep_dive():
+    st.title("🔎 Deep Dive Analysis")
+    st.caption("On-demand full analysis: price chart with S/R levels, pattern detection, and all dimension scores.")
 
-from datetime import datetime  # noqa: E402 (needed here for _scan_age)
+    # Pre-fill symbol from row-click navigation
+    nav_sym = st.session_state.pop("deep_dive_nav_symbol", None)
+    if nav_sym:
+        st.session_state["dd_symbol_input"] = nav_sym.upper().strip()
+    auto_analyze = st.session_state.pop("dd_auto_analyze", False)
+
+    col_sym, col_btn = st.columns([4, 1])
+    symbol = col_sym.text_input(
+        "Symbol", placeholder="NVDA", label_visibility="collapsed", key="dd_symbol_input",
+    ).upper().strip()
+    analyze = col_btn.button("🔍 Analyze", use_container_width=True, type="primary")
+
+    # Cache age + refresh row (shown only when a cached result exists)
+    cache_key = f"dd_cache_{symbol}" if symbol else None
+    cached = st.session_state.get(cache_key) if cache_key else None
+    run_analysis = analyze or auto_analyze
+
+    if cached:
+        age_secs = (datetime.now() - cached["analyzed_at"]).total_seconds()
+        h = int(age_secs // 3600)
+        m = int((age_secs % 3600) // 60)
+        age_str = f"{h}h {m}m ago" if h > 0 else (f"{m}m ago" if m > 0 else "just now")
+        info_col, refresh_col = st.columns([5, 1])
+        info_col.caption(f"Showing cached analysis · {age_str}")
+        if refresh_col.button("🔄 Refresh", use_container_width=True, key="dd_refresh"):
+            run_analysis = True
+
+    if not symbol:
+        st.info("Enter a ticker symbol above and click **Analyze**.")
+        return
+
+    # Serve from cache when not re-running
+    if cached and not run_analysis:
+        _render_dd_content(symbol, cached)
+        return
+
+    if not run_analysis:
+        st.info("Enter a ticker symbol above and click **Analyze**.")
+        return
+
+    from data.fetcher import fetch
+    from scanner import correction, fundamental, news_classifier, patterns, scorer, technical
+
+    with st.spinner(f"Fetching and analyzing **{symbol}**…"):
+        deep_cfg = dict(config)
+        deep_cfg["correction"] = dict(config.get("correction", {}))
+        deep_cfg["correction"]["min_drop_pct"] = 0.005
+
+        data = fetch(symbol, use_cache=False)
+        if data is None:
+            st.error(f"Could not fetch data for **{symbol}**. Check the symbol and try again.")
+            return
+
+        fi = data.fast_info
+        fund        = fundamental.score(data, deep_cfg)
+        corr_result, corr_days = correction.detect(data, deep_cfg)
+        tech        = technical.score(data, deep_cfg, correction_days=corr_days)
+        news        = news_classifier.classify(data, deep_cfg)
+        pattern     = patterns.score(data, deep_cfg)
+        result      = scorer.compute(
+            symbol, fund, tech, corr_result, news, deep_cfg, pattern,
+            fi.get("last_price"), fi.get("year_high"),
+            data.info.get("sector"), data.info.get("industry"),
+        )
+
+    payload = {
+        "result": result, "fund": fund, "tech": tech,
+        "corr_result": corr_result, "news": news,
+        "pattern": pattern, "data": data,
+        "analyzed_at": datetime.now(), "deep_cfg": deep_cfg,
+    }
+    st.session_state[cache_key] = payload
+    _render_dd_content(symbol, payload)
+
+
+# ── Routing ───────────────────────────────────────────────────────────────────
 
 if "Dashboard" in page:
     page_dashboard()
