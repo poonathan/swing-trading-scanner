@@ -1,0 +1,93 @@
+scoring:
+  weights:
+    fundamental: 0.35
+    technical: 0.30
+    correction: 0.25
+    news: 0.10
+  min_composite_score: 60
+  min_fundamental_score: 45
+
+fundamental:
+  min_market_cap: 500000000
+  max_pe_ratio: 60
+  min_return_on_equity: 0.05
+  max_debt_to_equity: 3.0
+  min_current_ratio: 0.8
+  min_gross_margin: 0.15
+  min_revenue_growth_yoy: -0.10
+
+technical:
+  lookback_uptrend_days: 63
+  sma_short: 50
+  sma_long: 200
+  min_adx: 18
+  rsi_uptrend_floor: 45
+
+correction:
+  min_drop_pct: 0.04
+  max_drop_pct: 0.25
+  window_days: 30
+  volume_decline_threshold: 0.90
+  max_correction_days: 15
+  spy_correlation_macro_threshold: 0.65
+
+news:
+  sentiment_window_days: 14
+  rss_timeout_seconds: 5
+  fundamental_keywords:
+    - "earnings miss"
+    - "revenue decline"
+    - "guidance cut"
+    - "guidance lowered"
+    - "lowered guidance"
+    - "accounting fraud"
+    - "sec investigation"
+    - "product recall"
+    - "ceo fired"
+    - "ceo resign"
+    - "bankruptcy"
+    - "debt default"
+    - "losing market share"
+    - "revenue shortfall"
+    - "profit warning"
+    - "impairment charge"
+    - "write-down"
+    - "restatement"
+    - "disappointing results"
+    - "misses estimates"
+    - "below expectations"
+  macro_keywords:
+    - "fed rate"
+    - "federal reserve"
+    - "interest rate"
+    - "inflation"
+    - "recession"
+    - "trade war"
+    - "tariff"
+    - "yield curve"
+    - "market selloff"
+    - "market crash"
+    - "sector rotation"
+    - "geopolitical"
+    - "ukraine"
+    - "china tension"
+    - "oil prices"
+    - "supply chain"
+    - "broad market"
+    - "market-wide"
+    - "treasury yield"
+    - "cpi data"
+    - "jobs report"
+    - "payroll"
+  sector_keywords:
+    - "chip shortage"
+    - "semiconductor"
+    - "banking crisis"
+    - "housing market"
+    - "energy prices"
+    - "healthcare reform"
+    - "drug pricing"
+    - "regulatory crackdown"
+    - "antitrust"
+    - "sector rout"
+    - "industry headwinds"
