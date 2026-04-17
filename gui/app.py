@@ -66,6 +66,13 @@ st.markdown("""
 
 _NAV_OPTIONS = ["🏠  Dashboard", "🔍  Scanner", "🔎  Deep Dive", "📊  Trend Tracker", "📋  History", "⭐  Watchlist"]
 
+# Apply any pending navigation BEFORE the radio widget is instantiated.
+# Setting st.session_state[key] after a widget with that key renders throws an error.
+if "_nav_request" in st.session_state:
+    pending = st.session_state.pop("_nav_request")
+    if pending in _NAV_OPTIONS:
+        st.session_state["nav_page"] = pending
+
 with st.sidebar:
     st.markdown("## 📈 Swing Scanner")
     st.divider()
@@ -260,9 +267,8 @@ def page_dashboard():
         st.subheader(f"🟢 BUY DIP Opportunities ({len(buy_dip)})")
         _col_guide()
         if not buy_dip.empty:
-            st.caption("Click any row to open Deep Dive for that stock.")
             disp = _display_cols(buy_dip)
-            _selectable_table(disp, height=280)
+            _selectable_table(disp, height=280, key="buydip")
         else:
             st.info("No BUY DIP candidates in the latest scan.")
 
@@ -307,9 +313,8 @@ def page_dashboard():
     # WATCH table
     st.subheader(f"🟡 WATCH Candidates ({len(watch)})")
     if not watch.empty:
-        st.caption("Click any row to open Deep Dive for that stock.")
         disp = _display_cols(watch)
-        _selectable_table(disp, height=320)
+        _selectable_table(disp, height=320, key="watch")
         _col_guide()
 
 
@@ -463,9 +468,8 @@ def page_scanner():
 
     st.subheader("📊 Results")
     _col_guide()
-    st.caption("Click any row to open Deep Dive for that stock.")
     disp = _display_cols(df)
-    _selectable_table(disp, height=420)
+    _selectable_table(disp, height=420, key="scanner")
 
     # Quick add to watchlist
     st.divider()
@@ -801,23 +805,25 @@ def _nav_to_deep_dive(symbol: str):
     """Navigate to Deep Dive for the given symbol, triggering auto-analysis."""
     st.session_state["deep_dive_nav_symbol"] = symbol
     st.session_state["dd_auto_analyze"] = True
-    st.session_state["nav_page"] = "🔎  Deep Dive"
+    # Use _nav_request so the transfer to nav_page happens before the radio renders
+    st.session_state["_nav_request"] = "🔎  Deep Dive"
     st.rerun()
 
 
-def _selectable_table(disp: pd.DataFrame, height: int = 320) -> None:
-    """Render a styled, row-selectable dataframe. Clicking a row navigates to Deep Dive."""
-    event = st.dataframe(
-        _style_table(disp),
-        use_container_width=True,
-        height=height,
-        on_select="rerun",
-        selection_mode="single-row",
-    )
-    if event.selection.rows:
-        sym = disp.iloc[event.selection.rows[0]].get("Symbol", "")
-        if sym:
-            _nav_to_deep_dive(sym)
+def _selectable_table(disp: pd.DataFrame, height: int = 320, key: str = "") -> None:
+    """Render a styled dataframe with a Quick Deep Dive selector below it."""
+    st.dataframe(_style_table(disp), use_container_width=True, height=height)
+    if not disp.empty and "Symbol" in disp.columns:
+        symbols = disp["Symbol"].tolist()
+        sel_c, btn_c = st.columns([3, 1])
+        chosen = sel_c.selectbox(
+            "Select ticker for Deep Dive",
+            symbols,
+            key=f"qd_sel_{key}",
+            label_visibility="collapsed",
+        )
+        if btn_c.button("🔎 Deep Dive", use_container_width=True, key=f"qd_btn_{key}", type="primary"):
+            _nav_to_deep_dive(chosen)
 
 
 def _wl_simple(wl: pd.DataFrame):
@@ -1007,33 +1013,50 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
     current_px = result.current_price or 0.0
     nearest_sup = pattern.nearest_support_price
     nearest_res = pattern.nearest_resistance_price
-    stop_default  = float(nearest_sup)  if nearest_sup else round(current_px * 0.95, 2)
+    stop_default   = float(nearest_sup)  if nearest_sup else round(current_px * 0.95, 2)
     target_default = float(nearest_res) if nearest_res else round(current_px * 1.10, 2)
 
-    rr_c1, rr_c2, rr_c3, rr_c4 = st.columns(4)
-    rr_entry  = rr_c1.number_input("Entry ($)", value=float(current_px), min_value=0.0, step=0.01, format="%.2f")
-    rr_stop   = rr_c2.number_input("Stop Loss ($)", value=stop_default,   min_value=0.0, step=0.01, format="%.2f",
-                                   help="Suggested: nearest support below current price")
-    rr_target = rr_c3.number_input("Target ($)",    value=target_default, min_value=0.0, step=0.01, format="%.2f",
-                                   help="Suggested: nearest resistance above current price")
+    rr_c1, rr_c2, rr_c3 = st.columns(3)
+    rr_entry  = rr_c1.number_input("Entry Price ($)", value=float(current_px), min_value=0.0, step=0.01, format="%.2f")
+    rr_stop   = rr_c2.number_input("Stop Loss ($)",   value=stop_default,      min_value=0.0, step=0.01, format="%.2f",
+                                   help="Suggested: nearest S/R support below current price")
+    rr_target = rr_c3.number_input("Profit Target ($)", value=target_default,  min_value=0.0, step=0.01, format="%.2f",
+                                   help="Suggested: nearest S/R resistance above current price")
 
     if rr_entry > 0 and rr_stop > 0 and rr_target > rr_entry > rr_stop:
-        risk   = rr_entry - rr_stop
-        reward = rr_target - rr_entry
-        rr_ratio = reward / risk
-        rr_c4.metric("R:R Ratio", f"{rr_ratio:.1f}:1",
-                     help="Risk:Reward ratio. ≥ 2:1 is generally the minimum for a worthwhile swing trade.")
+        risk       = rr_entry - rr_stop
+        reward     = rr_target - rr_entry
+        rr_ratio   = reward / risk
         risk_pct   = risk   / rr_entry * 100
         reward_pct = reward / rr_entry * 100
-        summary = f"Risk **${risk:.2f}** ({risk_pct:.1f}%) · Reward **${reward:.2f}** ({reward_pct:.1f}%)"
-        if rr_ratio >= 2:
-            st.success(f"R:R {rr_ratio:.1f}:1 — favorable setup · {summary}")
-        elif rr_ratio >= 1:
-            st.warning(f"R:R {rr_ratio:.1f}:1 — marginal · {summary}")
+
+        out1, out2, out3, out4 = st.columns(4)
+        out1.metric("Risk per Share",   f"${risk:.2f}",   delta=f"-{risk_pct:.1f}% from entry",   delta_color="inverse")
+        out2.metric("Reward per Share", f"${reward:.2f}", delta=f"+{reward_pct:.1f}% from entry")
+        out3.metric("R:R Ratio", f"{rr_ratio:.1f} : 1",
+                    help="For every $1 risked, expected gain. Aim for 2:1 or better.")
+        out4.metric("Position Risk", f"{risk_pct:.1f}%",
+                    help="Percentage of entry price at risk if stop is hit.")
+
+        if rr_ratio >= 2.0:
+            st.success(
+                f"Favorable setup — R:R is {rr_ratio:.1f}:1. "
+                f"For every dollar you risk, the potential reward is {rr_ratio:.1f} dollars. "
+                f"Entry at {rr_entry:.2f}, stop at {rr_stop:.2f}, target at {rr_target:.2f}."
+            )
+        elif rr_ratio >= 1.0:
+            st.warning(
+                f"Marginal setup — R:R is {rr_ratio:.1f}:1, which is below the recommended 2:1 minimum. "
+                f"Consider tightening your stop loss or raising the profit target to improve the ratio."
+            )
         else:
-            st.error(f"R:R {rr_ratio:.1f}:1 — poor risk/reward, reconsider · {summary}")
-    elif rr_target <= rr_entry or rr_stop >= rr_entry:
-        st.caption("Enter: Stop Loss < Entry < Target to calculate R:R.")
+            st.error(
+                f"Poor risk/reward — R:R is {rr_ratio:.1f}:1. "
+                f"You are risking {risk_pct:.1f}% of your entry to gain only {reward_pct:.1f}%. "
+                f"This setup does not meet minimum trade criteria. Reconsider entry or targets."
+            )
+    elif rr_target > 0 and rr_stop > 0 and not (rr_target > rr_entry > rr_stop):
+        st.caption("Tip: Stop Loss must be below Entry, and Profit Target must be above Entry, to calculate R:R.")
 
     st.divider()
 
@@ -1063,7 +1086,34 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
         with tab_fund:
             if fund:
-                st.metric("Score", f"{fund.score:.0f}/100")
+                # Verdict
+                if fund.score >= 70:
+                    st.success("**Bullish** — strong financial health supports the buy case.")
+                elif fund.score >= 50:
+                    st.info("**Neutral** — acceptable fundamentals; not a headwind to the trade.")
+                else:
+                    st.warning("**Bearish** — weak fundamentals add risk. Verify this is a temporary correction, not deterioration.")
+                # Key observations
+                obs = []
+                roe = fund.return_on_equity
+                if roe is not None:
+                    if roe > 0.20:   obs.append(f"Excellent ROE of {roe:.1%} — management creates strong shareholder value.")
+                    elif roe > 0.10: obs.append(f"Solid ROE of {roe:.1%} — profitable and efficient.")
+                    elif roe > 0:    obs.append(f"Below-average ROE of {roe:.1%} — limited equity returns.")
+                    else:            obs.append(f"Negative ROE ({roe:.1%}) — currently unprofitable; verify it is temporary.")
+                de = fund.debt_to_equity
+                if de is not None:
+                    if de < 0.3:   obs.append("Very low debt — resilient balance sheet, buffer against downturns.")
+                    elif de < 1.0: obs.append(f"Moderate leverage (D/E {de:.1f}) — manageable; watch in rising rate environment.")
+                    else:          obs.append(f"High leverage (D/E {de:.1f}) — elevated financial risk; rate sensitivity.")
+                rg = fund.revenue_growth_yoy
+                if rg is not None:
+                    if rg > 0.15:  obs.append(f"Strong revenue growth of {rg:.1%} — demand is expanding.")
+                    elif rg > 0.0: obs.append(f"Moderate growth of {rg:.1%} — stable, not exciting.")
+                    else:          obs.append(f"Revenue declining {rg:.1%} — investigate if structural or cyclical.")
+                for o in obs:
+                    st.caption(f"• {o}")
+                st.divider()
                 cols = st.columns(3)
                 cols[0].metric("ROE", f"{fund.return_on_equity:.1%}" if fund.return_on_equity else "—")
                 cols[1].metric("D/E", f"{fund.debt_to_equity:.2f}" if fund.debt_to_equity else "—")
@@ -1075,7 +1125,26 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
         with tab_tech:
             if tech:
-                st.metric("Score", f"{tech.score:.0f}/100")
+                # Verdict
+                bullish_signals = sum([tech.price_above_200sma, tech.price_above_50sma_before_drop,
+                                       tech.macd_bullish_before_drop, tech.higher_highs_higher_lows,
+                                       tech.obv_uptrend])
+                if tech.score >= 70:
+                    st.success(f"**Bullish** — {bullish_signals}/5 technical indicators confirm the uptrend before this pullback.")
+                elif tech.score >= 50:
+                    st.info(f"**Neutral** — mixed signals ({bullish_signals}/5 bullish). Uptrend may be weakening; watch for confirmation.")
+                else:
+                    st.warning(f"**Bearish** — only {bullish_signals}/5 technical indicators are positive. The prior trend may be broken.")
+                obs = []
+                if tech.price_above_200sma:  obs.append("Trading above the 200-day SMA — long-term uptrend intact.")
+                else:                         obs.append("Below the 200-day SMA — long-term trend is down; adds risk.")
+                if tech.higher_highs_higher_lows: obs.append("Pattern of higher highs and higher lows — momentum structure is healthy.")
+                if tech.adx_value and tech.adx_value > 25: obs.append(f"ADX {tech.adx_value:.0f} — strong trend strength (>25 = trending market).")
+                elif tech.adx_value:                        obs.append(f"ADX {tech.adx_value:.0f} — weak trend (<25 = choppy/ranging market).")
+                if tech.macd_bullish_before_drop: obs.append("MACD was bullish before the drop — momentum was positive pre-correction.")
+                for o in obs[:3]:
+                    st.caption(f"• {o}")
+                st.divider()
                 cols = st.columns(3)
                 cols[0].metric("ADX", f"{tech.adx_value:.1f}" if tech.adx_value else "—")
                 cols[1].metric("RSI at peak", f"{tech.rsi_at_peak:.1f}" if tech.rsi_at_peak else "—")
@@ -1087,7 +1156,31 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
         with tab_corr:
             if corr_result:
-                st.metric("Score", f"{corr_result.score:.0f}/100")
+                # Verdict
+                depth_ok = 0.05 <= corr_result.correction_pct <= 0.15
+                vol_ok = corr_result.volume_ratio < 0.90
+                macro_ok = corr_result.is_macro_correlated or corr_result.spy_correlation and corr_result.spy_correlation >= 0.55
+                if corr_result.score >= 70:
+                    st.success("**Bullish** — healthy, orderly pullback with the right characteristics to buy the dip.")
+                elif corr_result.score >= 50:
+                    st.info("**Neutral** — correction is underway but not all quality signals are present yet.")
+                else:
+                    st.warning("**Bearish** — correction shows signs of genuine selling pressure, not a simple pullback.")
+                obs = []
+                p = corr_result.correction_pct
+                if 0.05 <= p <= 0.15: obs.append(f"Drop of {p:.1%} is in the sweet spot (5–15%) for a buy-the-dip setup.")
+                elif p < 0.05:        obs.append(f"Drop of {p:.1%} is too small — may not yet offer meaningful entry advantage.")
+                else:                 obs.append(f"Drop of {p:.1%} is larger than the 15% sweet spot — verify the cause is not fundamental.")
+                vr = corr_result.volume_ratio
+                if vr < 0.85:   obs.append(f"Volume ratio {vr:.2f}x — low-volume selloff. Sellers are not aggressive; likely profit-taking.")
+                elif vr < 1.10: obs.append(f"Volume ratio {vr:.2f}x — near-average volume. Neutral signal.")
+                else:           obs.append(f"Volume ratio {vr:.2f}x — elevated volume during decline. Could signal genuine distribution.")
+                if corr_result.spy_correlation is not None:
+                    if corr_result.spy_correlation >= 0.65: obs.append(f"High SPY correlation ({corr_result.spy_correlation:.2f}) — selloff is macro-driven, not company-specific. Good for a bounce.")
+                    else:                                   obs.append(f"Low SPY correlation ({corr_result.spy_correlation:.2f}) — selloff diverges from the market; investigate the cause.")
+                for o in obs[:3]:
+                    st.caption(f"• {o}")
+                st.divider()
                 cols = st.columns(3)
                 cols[0].metric("Drop", f"{corr_result.correction_pct:.1%}")
                 cols[1].metric("Vol Ratio", f"{corr_result.volume_ratio:.2f}x")
@@ -1098,7 +1191,28 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
         with tab_news:
             if news:
-                st.metric("Score", f"{news.score:.0f}/100")
+                # Verdict
+                event = news.event_type
+                if event in ("macro", "sector", "unrelated"):
+                    st.success(f"**Bullish** — event type '{event}' means the drop is NOT caused by company-specific bad news. The business is intact.")
+                elif event == "mixed":
+                    st.info("**Neutral** — mixed signals. Some macro/sector triggers but also some company-specific mentions. Verify carefully.")
+                elif event == "fundamental":
+                    st.error("**Bearish** — news suggests company-specific deterioration (earnings miss, guidance cut, scandal). This is NOT a simple dip to buy.")
+                else:
+                    st.info("**Neutral** — insufficient news data to classify the trigger.")
+                obs = []
+                if news.downgrade_count > 0:
+                    obs.append(f"{news.downgrade_count} analyst downgrade(s) recently — adds near-term selling pressure.")
+                if news.pre_earnings:
+                    obs.append("Earnings event upcoming — avoid initiating position before earnings; wait for the print.")
+                if news.confidence >= 0.7:
+                    obs.append(f"High classification confidence ({news.confidence:.0%}) — signal is reliable.")
+                elif news.confidence >= 0.5:
+                    obs.append(f"Moderate confidence ({news.confidence:.0%}) — treat classification as indicative, not definitive.")
+                for o in obs:
+                    st.caption(f"• {o}")
+                st.divider()
                 cols = st.columns(3)
                 cols[0].metric("Event Type", news.event_type)
                 cols[1].metric("Confidence", f"{news.confidence:.0%}")
@@ -1110,40 +1224,71 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
         with tab_val:
             info = data.info
-            cols = st.columns(3)
-            cols[0].metric("Trailing P/E", f"{info['trailingPE']:.1f}" if info.get("trailingPE") else "—",
-                           help="Price / trailing 12-month earnings. Compare to sector peers.")
-            cols[1].metric("Forward P/E",  f"{info['forwardPE']:.1f}"  if info.get("forwardPE")  else "—",
-                           help="Price / estimated next-year earnings. < trailing P/E = earnings growing.")
-            cols[2].metric("PEG Ratio",    f"{info['pegRatio']:.2f}"   if info.get("pegRatio")   else "—",
-                           help="P/E divided by earnings growth rate. < 1 = potentially undervalued.")
-            cols2 = st.columns(3)
-            cols2[0].metric("P/B", f"{info['priceToBook']:.2f}" if info.get("priceToBook") else "—",
-                            help="Price / book value. < 1 = trading below book.")
-            cols2[1].metric("EV/EBITDA", f"{info['enterpriseToEbitda']:.1f}" if info.get("enterpriseToEbitda") else "—",
-                            help="Enterprise value to EBITDA. < 10 = generally reasonable valuation.")
+            pe   = info.get("trailingPE")
+            fpe  = info.get("forwardPE")
+            peg  = info.get("pegRatio")
+            pb   = info.get("priceToBook")
+            ev_e = info.get("enterpriseToEbitda")
             target_mean = info.get("targetMeanPrice")
+            # Narrative
+            val_obs = []
+            if peg and peg < 1.0:      val_obs.append(f"PEG ratio {peg:.2f} is below 1 — stock may be undervalued relative to its growth rate.")
+            elif peg and peg < 2.0:    val_obs.append(f"PEG ratio {peg:.2f} — fair value range; growth is priced in but not stretched.")
+            elif peg:                   val_obs.append(f"PEG ratio {peg:.2f} — above 2 suggests the stock is pricing in high expectations.")
+            if pe and fpe and fpe < pe: val_obs.append(f"Forward P/E ({fpe:.1f}) is lower than trailing P/E ({pe:.1f}) — analysts expect earnings growth ahead.")
+            elif fpe and pe and fpe > pe * 1.1: val_obs.append(f"Forward P/E ({fpe:.1f}) is higher than trailing — earnings expected to dip next year.")
+            if target_mean and current_px:
+                upside = (target_mean - current_px) / current_px * 100
+                if upside > 15:    val_obs.append(f"Analyst consensus target implies {upside:.0f}% upside — strong buy case from Street.")
+                elif upside > 5:   val_obs.append(f"Analyst consensus target implies {upside:.0f}% upside — modest upside.")
+                elif upside >= 0:  val_obs.append(f"Analyst target near current price ({upside:.0f}% upside) — Street sees limited near-term upside.")
+                else:              val_obs.append(f"Analyst target below current price ({upside:.0f}%) — Street is more cautious than the current price implies.")
+            if val_obs:
+                for o in val_obs:
+                    st.caption(f"• {o}")
+                st.divider()
+            cols = st.columns(3)
+            cols[0].metric("Trailing P/E", f"{pe:.1f}" if pe else "—",
+                           help="Price / trailing 12-month earnings. Compare to sector peers.")
+            cols[1].metric("Forward P/E",  f"{fpe:.1f}" if fpe else "—",
+                           help="Price / estimated next-year earnings. Lower than trailing = earnings growing.")
+            cols[2].metric("PEG Ratio",    f"{peg:.2f}" if peg else "—",
+                           help="P/E divided by growth rate. < 1 = potentially undervalued, < 2 = fair, > 2 = pricey.")
+            cols2 = st.columns(3)
+            cols2[0].metric("P/B", f"{pb:.2f}" if pb else "—",
+                            help="Price / book value. < 1 = trading below book (asset-value support).")
+            cols2[1].metric("EV/EBITDA", f"{ev_e:.1f}" if ev_e else "—",
+                            help="Enterprise value / EBITDA. < 10 = reasonable; > 20 = expensive.")
             if target_mean and current_px:
                 upside = (target_mean - current_px) / current_px * 100
                 cols2[2].metric("Analyst Target", f"${target_mean:.2f}",
                                 delta=f"{upside:+.1f}% vs current",
                                 delta_color="normal" if upside >= 0 else "inverse",
-                                help=f"Mean analyst price target. {info.get('numberOfAnalystOpinions', '?')} opinions.")
+                                help=f"Mean analyst price target across {info.get('numberOfAnalystOpinions', '?')} opinions.")
             else:
                 cols2[2].metric("Analyst Target", "—")
 
         with tab_analyst:
             rs = data.recommendations_summary
             if rs is not None and not rs.empty:
-                # Most recent period row
                 row = rs.iloc[0]
                 categories_rec = ["strongBuy", "buy", "hold", "sell", "strongSell"]
                 labels_rec     = ["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]
                 colors_rec     = ["#1a7a30", "#4CAF50", "#FF9800", "#e74c3c", "#8b0000"]
                 counts = [int(row.get(c, 0)) for c in categories_rec]
+                total_analysts = sum(counts)
+                buy_count  = counts[0] + counts[1]
+                sell_count = counts[3] + counts[4]
+                if total_analysts > 0:
+                    buy_pct = buy_count / total_analysts
+                    if buy_pct >= 0.6:
+                        st.success(f"**Bullish consensus** — {buy_count} of {total_analysts} analysts ({buy_pct:.0%}) rate it Buy or Strong Buy.")
+                    elif sell_count / total_analysts >= 0.4:
+                        st.warning(f"**Bearish consensus** — {sell_count} of {total_analysts} analysts rate it Sell or Strong Sell.")
+                    else:
+                        st.info(f"**Neutral consensus** — mixed views among {total_analysts} analysts covering this stock.")
                 fig_rec = go.Figure(go.Bar(
-                    x=labels_rec, y=counts,
-                    marker_color=colors_rec, opacity=0.85,
+                    x=labels_rec, y=counts, marker_color=colors_rec, opacity=0.85,
                     text=counts, textposition="outside",
                 ))
                 fig_rec.update_layout(height=220, margin=dict(t=10, b=10), showlegend=False,
@@ -1160,10 +1305,23 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
         with tab_own:
             info = data.info
-            ins_pct   = info.get("heldPercentInsiders")
-            inst_pct  = info.get("heldPercentInstitutions")
-            short_pct = info.get("shortPercentOfFloat")
+            ins_pct     = info.get("heldPercentInsiders")
+            inst_pct    = info.get("heldPercentInstitutions")
+            short_pct   = info.get("shortPercentOfFloat")
             short_ratio = info.get("shortRatio")
+            # Narrative
+            own_obs = []
+            if ins_pct and ins_pct > 0.10:  own_obs.append(f"Insider ownership is high ({ins_pct:.1%}) — management has significant skin in the game.")
+            elif ins_pct and ins_pct > 0.02: own_obs.append(f"Moderate insider ownership ({ins_pct:.1%}) — some alignment with shareholders.")
+            elif ins_pct is not None:         own_obs.append(f"Low insider ownership ({ins_pct:.1%}) — management may be less incentivized by share price.")
+            if short_pct and short_pct > 0.20: own_obs.append(f"Heavy short interest ({short_pct:.1%} of float) — potential for a short squeeze if the stock recovers.")
+            elif short_pct and short_pct > 0.10: own_obs.append(f"Elevated short interest ({short_pct:.1%}) — some bearish conviction from short sellers; monitor closely.")
+            elif short_pct:                       own_obs.append(f"Low short interest ({short_pct:.1%}) — minimal bearish bets against the stock.")
+            if short_ratio and short_ratio > 10: own_obs.append(f"Short ratio {short_ratio:.1f} days — high days-to-cover; shorts are vulnerable to a squeeze.")
+            for o in own_obs:
+                st.caption(f"• {o}")
+            if own_obs:
+                st.divider()
             cols = st.columns(4)
             cols[0].metric("Insider Ownership", f"{ins_pct:.1%}" if ins_pct else "—",
                            help="% held by insiders (execs, directors). > 5% shows skin in the game.")
