@@ -1518,10 +1518,16 @@ def page_deep_dive():
     st.title("🔎 Deep Dive Analysis")
     st.caption("Full single-ticker analysis — chart with S/R & patterns, fundamentals, risk/reward, analyst consensus.")
 
-    # Pre-fill symbol from row-click navigation
-    nav_sym = st.session_state.pop("deep_dive_nav_symbol", None)
-    if nav_sym:
-        st.session_state["dd_symbol_input"] = nav_sym.upper().strip()
+    # Apply any pending symbol change BEFORE the text-input widget renders.
+    # (Setting dd_symbol_input after the widget is instantiated raises StreamlitAPIException.)
+    _pending_sym = st.session_state.pop("_dd_pick_request", None)
+    if not _pending_sym:
+        nav_sym = st.session_state.pop("deep_dive_nav_symbol", None)
+        if nav_sym:
+            _pending_sym = nav_sym.upper().strip()
+    if _pending_sym:
+        st.session_state["dd_symbol_input"] = _pending_sym
+
     auto_analyze = st.session_state.pop("dd_auto_analyze", False)
 
     col_sym, col_btn = st.columns([4, 1])
