@@ -1543,7 +1543,7 @@ def page_deep_dive():
         pick_cols = st.columns(min(len(cached_syms), 8))
         for i, s in enumerate(cached_syms[:8]):
             if pick_cols[i].button(s, key=f"dd_pick_{s}", use_container_width=True):
-                st.session_state["dd_symbol_input"] = s
+                st.session_state["_dd_pick_request"] = s
                 st.rerun()
 
     # Cache age + refresh row (shown only when a cached result exists)
