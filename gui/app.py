@@ -68,7 +68,7 @@ with st.sidebar:
 
     page = st.radio(
         "nav",
-        ["🏠  Dashboard", "🔍  Scanner", "📊  Trend Tracker", "📋  History", "⭐  Watchlist"],
+        ["🏠  Dashboard", "🔍  Scanner", "🔎  Deep Dive", "📊  Trend Tracker", "📋  History", "⭐  Watchlist"],
         label_visibility="collapsed",
     )
 
@@ -99,6 +99,7 @@ def _display_cols(df: pd.DataFrame) -> pd.DataFrame:
         "symbol": "Symbol", "signal": "Signal",
         "composite_score": "Score", "fund_score": "Fund",
         "tech_score": "Tech", "corr_score": "Corr", "news_score": "News",
+        "pat_score": "Pat", "top_pattern": "Pattern",
         "correction_pct": "Drop%", "volume_ratio": "VolRt",
         "event_type": "Event", "current_price": "Price",
         "sector": "Sector", "reason": "Reason",
@@ -115,9 +116,11 @@ def _display_cols(df: pd.DataFrame) -> pd.DataFrame:
         out["VolRt"] = out["VolRt"].apply(lambda x: f"{x:.2f}x" if pd.notna(x) else "—")
     if "Price" in out:
         out["Price"] = out["Price"].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "—")
-    for c in ("Fund", "Tech", "Corr", "News"):
+    for c in ("Fund", "Tech", "Corr", "News", "Pat"):
         if c in out:
             out[c] = out[c].apply(lambda x: f"{x:.0f}" if pd.notna(x) else "—")
+    if "Pattern" in out:
+        out["Pattern"] = out["Pattern"].apply(lambda x: x if pd.notna(x) and x else "—")
     return out
 
 
@@ -348,6 +351,16 @@ def page_scanner():
         return
 
     # Results table
+    def _top_pattern_label(r):
+        p = r.pattern
+        if p and p.has_bullish_pattern and p.top_pattern_name:
+            return f"▲ {p.top_pattern_name}"
+        if p and p.patterns_detected:
+            bearish = [pm for pm in p.patterns_detected if pm.signal == "bearish"]
+            if bearish:
+                return f"▼ {bearish[0].name}"
+        return None
+
     df = pd.DataFrame([{
         "symbol": r.symbol,
         "signal": r.signal,
@@ -356,6 +369,8 @@ def page_scanner():
         "tech_score": r.technical.score if r.technical else None,
         "corr_score": r.correction.score if r.correction else None,
         "news_score": r.news.score if r.news else None,
+        "pat_score": round(r.pattern.score, 1) if r.pattern else None,
+        "top_pattern": _top_pattern_label(r),
         "correction_pct": round(r.correction.correction_pct * 100, 1) if r.correction else None,
         "volume_ratio": r.correction.volume_ratio if r.correction else None,
         "event_type": r.news.event_type if r.news else None,
@@ -480,11 +495,11 @@ def page_tracker():
     # ── Dimension scores breakdown ────────────────────────────────────────────
     st.subheader("📊 Dimension Scores Breakdown")
 
-    dim_cols = ["fund_score", "tech_score", "corr_score", "news_score"]
+    dim_cols = ["fund_score", "tech_score", "corr_score", "news_score", "pat_score"]
     dim_labels = {"fund_score": "Fundamental", "tech_score": "Technical",
-                  "corr_score": "Correction", "news_score": "News"}
+                  "corr_score": "Correction", "news_score": "News", "pat_score": "Pattern"}
     dim_colors = {"Fundamental": "#2196F3", "Technical": "#9C27B0",
-                  "Correction": "#FF9800", "News": "#4CAF50"}
+                  "Correction": "#FF9800", "News": "#4CAF50", "Pattern": "#E91E63"}
 
     fig2 = go.Figure()
     for col in dim_cols:
@@ -539,8 +554,8 @@ def page_tracker():
     # ── History table ─────────────────────────────────────────────────────────
     st.subheader("📋 All Scans for This Symbol")
     cols_show = ["scan_date", "signal", "composite_score", "fund_score", "tech_score",
-                 "corr_score", "news_score", "correction_pct", "volume_ratio",
-                 "event_type", "current_price", "reason"]
+                 "corr_score", "news_score", "pat_score", "top_pattern",
+                 "correction_pct", "volume_ratio", "event_type", "current_price", "reason"]
     cols_show = [c for c in cols_show if c in hist.columns]
     hist_disp = hist[cols_show].sort_values("scan_date", ascending=False).copy()
     hist_disp["scan_date"] = hist_disp["scan_date"].dt.strftime("%Y-%m-%d")
@@ -705,6 +720,229 @@ def _wl_simple(wl: pd.DataFrame):
                  use_container_width=True, height=340)
 
 
+# ── Deep Dive ─────────────────────────────────────────────────────────────────
+
+def page_deep_dive():
+    st.title("🔎 Deep Dive Analysis")
+    st.caption("On-demand full analysis: price chart with S/R levels, pattern detection, and all dimension scores.")
+
+    col_sym, col_btn = st.columns([4, 1])
+    symbol = col_sym.text_input("Symbol", placeholder="NVDA", label_visibility="collapsed").upper().strip()
+    analyze = col_btn.button("🔍 Analyze", use_container_width=True, type="primary")
+
+    if not symbol:
+        st.info("Enter a ticker symbol above and click **Analyze**.")
+        return
+    if not analyze:
+        return
+
+    from data.fetcher import fetch
+    from scanner import correction, fundamental, news_classifier, patterns, scorer, technical
+
+    with st.spinner(f"Fetching and analyzing **{symbol}**…"):
+        deep_cfg = dict(config)
+        deep_cfg["correction"] = dict(config.get("correction", {}))
+        deep_cfg["correction"]["min_drop_pct"] = 0.005  # allow even tiny pullbacks
+
+        data = fetch(symbol, use_cache=False)
+        if data is None:
+            st.error(f"Could not fetch data for **{symbol}**. Check the symbol and try again.")
+            return
+
+        fi = data.fast_info
+        fund        = fundamental.score(data, deep_cfg)
+        corr_result, corr_days = correction.detect(data, deep_cfg)
+        tech        = technical.score(data, deep_cfg, correction_days=corr_days)
+        news        = news_classifier.classify(data, deep_cfg)
+        pattern     = patterns.score(data, deep_cfg)
+        result      = scorer.compute(
+            symbol, fund, tech, corr_result, news, deep_cfg, pattern,
+            fi.get("last_price"), fi.get("year_high"),
+            data.info.get("sector"), data.info.get("industry"),
+        )
+
+    # ── Signal banner ─────────────────────────────────────────────────────────
+    sig_emoji = _SIG_EMOJI.get(result.signal, "⚪")
+    sig_color = {"BUY_DIP": _BUY_COLOR, "WATCH": _WATCH_COLOR, "AVOID": _AVOID_COLOR}.get(result.signal, "#999")
+    st.markdown(
+        f'<div style="border-left:6px solid {sig_color};padding:10px 16px;border-radius:6px;'
+        f'background:#fafafa;margin-bottom:8px">'
+        f'<span style="font-size:1.4rem;font-weight:700">{sig_emoji} {result.signal}</span>'
+        f'&nbsp;&nbsp;<span style="font-size:1.2rem">Score: {result.composite_score:.1f}/100</span><br>'
+        f'<span style="color:#555;font-size:0.9rem">{result.reason}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── KPI row ───────────────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("📊 Fundamental", f"{fund.score:.0f}/100")
+    c2.metric("📈 Technical",   f"{tech.score:.0f}/100")
+    c3.metric("📉 Correction",  f"{corr_result.score:.0f}/100",
+              delta=f"{corr_result.correction_pct:.1%} drop", delta_color="inverse")
+    c4.metric("📰 News",        f"{news.score:.0f}/100")
+    c5.metric("🔷 Pattern",     f"{pattern.score:.0f}/100")
+
+    st.divider()
+
+    # ── Price chart + S/R overlay ─────────────────────────────────────────────
+    col_chart, col_pat = st.columns([3, 1], gap="large")
+
+    with col_chart:
+        st.subheader("📊 Price + Support / Resistance (90 days)")
+        hist = data.history
+        if hist is not None and len(hist) >= 10:
+            window = hist.iloc[-90:]
+            fig = go.Figure()
+
+            # Candlestick
+            fig.add_trace(go.Candlestick(
+                x=window.index,
+                open=window["Open"], high=window["High"],
+                low=window["Low"],   close=window["Close"],
+                name="Price",
+                increasing_line_color="#27ae60",
+                decreasing_line_color="#e74c3c",
+                increasing_fillcolor="#27ae60",
+                decreasing_fillcolor="#e74c3c",
+            ))
+
+            # S/R horizontal lines
+            current_price = float(window["Close"].iloc[-1])
+            for lv in pattern.sr_levels:
+                if lv.level_type == "support":
+                    color, dash = "#27ae60", "dot"
+                elif lv.level_type == "resistance":
+                    color, dash = "#e74c3c", "dot"
+                else:
+                    color, dash = "#f39c12", "dot"
+                label = f"{'S' if lv.level_type == 'support' else 'R'} ${lv.price:.2f}"
+                if lv.fib_label:
+                    label += f" [{lv.fib_label}]"
+                    dash = "dashdot"
+                fig.add_hline(
+                    y=lv.price, line_dash=dash, line_color=color, line_width=1.5,
+                    annotation_text=label, annotation_position="right",
+                    annotation_font_size=11, annotation_font_color=color,
+                )
+
+            # Key pattern breakout/breakdown levels (thicker, purple)
+            for pm in pattern.patterns_detected:
+                if pm.key_price:
+                    kcolor = "#8e44ad" if pm.signal == "bullish" else "#c0392b"
+                    fig.add_hline(
+                        y=pm.key_price, line_dash="solid", line_color=kcolor, line_width=2,
+                        annotation_text=f"⚡ {pm.name} ${pm.key_price:.2f}",
+                        annotation_position="left",
+                        annotation_font_size=11, annotation_font_color=kcolor,
+                    )
+
+            fig.update_layout(
+                height=440, margin=dict(t=20, b=10, l=10, r=120),
+                xaxis_title="Date", yaxis_title="Price ($)",
+                xaxis_rangeslider_visible=False,
+                hovermode="x unified", showlegend=False,
+                plot_bgcolor="white",
+            )
+            fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0")
+            fig.update_yaxes(showgrid=True, gridcolor="#f0f0f0")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col_pat:
+        st.subheader("📐 Detected Patterns")
+        if pattern.patterns_detected:
+            for pm in sorted(pattern.patterns_detected, key=lambda x: -x.confidence):
+                icon  = "▲" if pm.signal == "bullish" else "▼"
+                color = "green" if pm.signal == "bullish" else "red"
+                st.markdown(f"**:{color}[{icon} {pm.name}]**  `{pm.confidence:.0%}`")
+                if pm.key_price:
+                    st.caption(f"Key level: **${pm.key_price:.2f}**")
+                st.caption(pm.description)
+                st.divider()
+        else:
+            st.info("No patterns detected in current data window.")
+
+        st.subheader("🔵 S/R Levels")
+        for lv in pattern.sr_levels[:6]:
+            icon  = "🟢" if lv.level_type == "support" else ("🔴" if lv.level_type == "resistance" else "🟡")
+            fib   = f" `{lv.fib_label}`" if lv.fib_label else ""
+            st.markdown(f"{icon} **${lv.price:.2f}**{fib}  str={lv.strength:.0f}")
+
+    st.divider()
+
+    # ── Dimension score radar ─────────────────────────────────────────────────
+    col_radar, col_detail = st.columns([1, 2], gap="large")
+
+    with col_radar:
+        st.subheader("🕸 Score Radar")
+        categories = ["Fundamental", "Technical", "Correction", "News", "Pattern"]
+        values     = [fund.score, tech.score, corr_result.score, news.score, pattern.score]
+        fig_r = go.Figure(go.Scatterpolar(
+            r=values + [values[0]],
+            theta=categories + [categories[0]],
+            fill="toself",
+            fillcolor="rgba(33,150,243,0.15)",
+            line=dict(color="#2196F3", width=2),
+            marker=dict(size=6),
+        ))
+        fig_r.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            height=320, margin=dict(t=20, b=10, l=20, r=20),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_r, use_container_width=True)
+
+    with col_detail:
+        st.subheader("📋 Analysis Detail")
+        tab_fund, tab_tech, tab_corr, tab_news = st.tabs(["Fundamental", "Technical", "Correction", "News"])
+
+        with tab_fund:
+            if fund:
+                st.metric("Score", f"{fund.score:.0f}/100")
+                cols = st.columns(3)
+                cols[0].metric("ROE", f"{fund.return_on_equity:.1%}" if fund.return_on_equity else "—")
+                cols[1].metric("D/E", f"{fund.debt_to_equity:.2f}" if fund.debt_to_equity else "—")
+                cols[2].metric("Gross Margin", f"{fund.gross_margins:.1%}" if fund.gross_margins else "—")
+                cols2 = st.columns(3)
+                cols2[0].metric("Rev Growth YoY", f"{fund.revenue_growth_yoy:.1%}" if fund.revenue_growth_yoy else "—")
+                cols2[1].metric("Earnings Growth", f"{fund.earnings_growth:.1%}" if fund.earnings_growth else "—")
+                cols2[2].metric("P/E", f"{fund.pe_ratio:.1f}" if fund.pe_ratio else "—")
+
+        with tab_tech:
+            if tech:
+                st.metric("Score", f"{tech.score:.0f}/100")
+                cols = st.columns(3)
+                cols[0].metric("ADX", f"{tech.adx_value:.1f}" if tech.adx_value else "—")
+                cols[1].metric("RSI at peak", f"{tech.rsi_at_peak:.1f}" if tech.rsi_at_peak else "—")
+                cols[2].metric("MACD Bullish", "✅" if tech.macd_bullish_before_drop else "❌")
+                cols2 = st.columns(3)
+                cols2[0].metric("Above 200 SMA", "✅" if tech.price_above_200sma else "❌")
+                cols2[1].metric("Above 50 SMA", "✅" if tech.price_above_50sma_before_drop else "❌")
+                cols2[2].metric("HH/HL", "✅" if tech.higher_highs_higher_lows else "❌")
+
+        with tab_corr:
+            if corr_result:
+                st.metric("Score", f"{corr_result.score:.0f}/100")
+                cols = st.columns(3)
+                cols[0].metric("Drop", f"{corr_result.correction_pct:.1%}")
+                cols[1].metric("Vol Ratio", f"{corr_result.volume_ratio:.2f}x")
+                cols[2].metric("RSI at Bottom", f"{corr_result.rsi_at_bottom:.1f}" if corr_result.rsi_at_bottom else "—")
+                if corr_result.spy_correlation is not None:
+                    st.metric("SPY Correlation", f"{corr_result.spy_correlation:.2f}",
+                              help="≥0.65 = macro-driven selloff")
+
+        with tab_news:
+            if news:
+                st.metric("Score", f"{news.score:.0f}/100")
+                cols = st.columns(3)
+                cols[0].metric("Event Type", news.event_type)
+                cols[1].metric("Confidence", f"{news.confidence:.0%}")
+                cols[2].metric("Downgrades", news.downgrade_count)
+                if news.top_headlines:
+                    st.markdown("**Recent headlines:**")
+                    for h in news.top_headlines[:4]:
+                        st.caption(f"• {h[:90]}")
+
+
 # ── Routing ───────────────────────────────────────────────────────────────────
 
 from datetime import datetime  # noqa: E402 (needed here for _scan_age)
@@ -713,6 +951,8 @@ if "Dashboard" in page:
     page_dashboard()
 elif "Scanner" in page:
     page_scanner()
+elif "Deep Dive" in page:
+    page_deep_dive()
 elif "Tracker" in page:
     page_tracker()
 elif "History" in page:

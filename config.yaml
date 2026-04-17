@@ -1,9 +1,10 @@
 scoring:
   weights:
-    fundamental: 0.35
-    technical: 0.30
-    correction: 0.25
-    news: 0.10
+    fundamental: 0.30
+    technical:   0.25
+    correction:  0.22
+    news:        0.08
+    pattern:     0.15
   min_composite_score: 60
   min_fundamental_score: 45
 
@@ -30,6 +31,15 @@ correction:
   volume_decline_threshold: 0.90
   max_correction_days: 15
   spy_correlation_macro_threshold: 0.65
+
+patterns:
+  sr_n_levels: 6           # max S/R levels to surface per ticker
+  sr_tolerance_pct: 0.02   # levels within 2% are clustered together
+  pivot_order: 5           # bars on each side to qualify as pivot high/low
+  min_pattern_confidence: 0.35   # patterns below this are ignored
+  # Bullish patterns scored: Double Bottom, Bull Flag, Falling Wedge,
+  #   Ascending Triangle, Cup & Handle, Inv. Head & Shoulders
+  # Bearish patterns scored: Head & Shoulders, Descending Triangle
 
 news:
   sentiment_window_days: 14

@@ -46,9 +46,11 @@ def _print_table(results: List[CompositeResult], verbose: bool) -> None:
     table.add_column("Tech", justify="right", min_width=4, no_wrap=True)
     table.add_column("Corr", justify="right", min_width=4, no_wrap=True)
     table.add_column("News", justify="right", min_width=4, no_wrap=True)
+    table.add_column("Pat", justify="right", min_width=4, no_wrap=True)
     table.add_column("Drop%", justify="right", min_width=5, no_wrap=True)
     table.add_column("VolRt", justify="right", min_width=5, no_wrap=True)
     table.add_column("Event", min_width=9, no_wrap=True)
+    table.add_column("Pattern", min_width=18, no_wrap=True)
     table.add_column("Price", justify="right", min_width=7, no_wrap=True)
 
     if verbose:
@@ -58,15 +60,29 @@ def _print_table(results: List[CompositeResult], verbose: bool) -> None:
         signal_style = _SIGNAL_COLORS.get(r.signal, "")
         signal_text = Text(r.signal, style=signal_style)
 
-        drop_str = f"{r.correction.correction_pct:.1%}" if r.correction else "—"
-        vol_str = f"{r.correction.volume_ratio:.2f}x" if r.correction else "—"
+        drop_str  = f"{r.correction.correction_pct:.1%}" if r.correction else "—"
+        vol_str   = f"{r.correction.volume_ratio:.2f}x" if r.correction else "—"
         event_str = r.news.event_type if r.news else "—"
         price_str = f"${r.current_price:.2f}" if r.current_price else "—"
 
         fund_str = f"{r.fundamental.score:.0f}" if r.fundamental else "—"
-        tech_str = f"{r.technical.score:.0f}" if r.technical else "—"
-        corr_str = f"{r.correction.score:.0f}" if r.correction else "—"
-        news_str = f"{r.news.score:.0f}" if r.news else "—"
+        tech_str = f"{r.technical.score:.0f}"   if r.technical   else "—"
+        corr_str = f"{r.correction.score:.0f}"  if r.correction  else "—"
+        news_str = f"{r.news.score:.0f}"         if r.news        else "—"
+        pat_str  = f"{r.pattern.score:.0f}"      if r.pattern     else "—"
+
+        # Pattern name column
+        if r.pattern and r.pattern.has_bullish_pattern and r.pattern.top_pattern_name:
+            conf = r.pattern.top_pattern_confidence or 0
+            pat_display = Text(f"▲ {r.pattern.top_pattern_name[:16]}", style="bold green")
+        elif r.pattern and r.pattern.patterns_detected:
+            bearish = [p for p in r.pattern.patterns_detected if p.signal == "bearish"]
+            if bearish:
+                pat_display = Text(f"▼ {bearish[0].name[:16]}", style="red")
+            else:
+                pat_display = Text("—", style="dim")
+        else:
+            pat_display = Text("—", style="dim")
 
         # Color the event type
         event_color = {
@@ -89,9 +105,11 @@ def _print_table(results: List[CompositeResult], verbose: bool) -> None:
             tech_str,
             corr_str,
             news_str,
+            pat_str,
             drop_str,
             vol_str,
             event_display,
+            pat_display,
             price_str,
         ]
         if verbose:
@@ -146,6 +164,27 @@ def print_single(result: CompositeResult) -> None:
         console.print(f"  Near support: {c.is_near_support}" + (f" at ${c.support_level:.2f}" if c.support_level else ""))
         if c.spy_correlation is not None:
             console.print(f"  SPY correlation: {c.spy_correlation:.2f} ({'macro-driven' if c.is_macro_correlated else 'stock-specific'})")
+
+    if result.pattern:
+        p = result.pattern
+        console.print(f"\n[cyan]Pattern Score: {p.score:.0f}/100[/cyan]")
+        if p.patterns_detected:
+            for pm in p.patterns_detected:
+                arrow = "▲" if pm.signal == "bullish" else "▼"
+                color = "green" if pm.signal == "bullish" else "red"
+                kp = f"  key=${pm.key_price:.2f}" if pm.key_price else ""
+                console.print(f"  [{color}]{arrow} {pm.name}[/] (conf={pm.confidence:.0%}){kp}  {pm.description}")
+        else:
+            console.print("  No patterns detected")
+        if p.sr_levels:
+            console.print("  [bold]S/R Levels:[/bold]")
+            for lv in p.sr_levels[:5]:
+                fib = f" [{lv.fib_label}]" if lv.fib_label else ""
+                console.print(f"    ${lv.price:.2f}  {lv.level_type:10s}  str={lv.strength:.0f}  touches={lv.touches}{fib}")
+        if p.nearest_support_price:
+            console.print(f"  Nearest support:    ${p.nearest_support_price:.2f}  (str={p.nearest_support_strength:.0f})" if p.nearest_support_strength else f"  Nearest support: ${p.nearest_support_price:.2f}")
+        if p.nearest_resistance_price:
+            console.print(f"  Nearest resistance: ${p.nearest_resistance_price:.2f}")
 
     if result.news:
         n = result.news

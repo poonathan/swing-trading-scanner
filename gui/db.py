@@ -74,6 +74,18 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_results_signal      ON scan_results(signal);
             CREATE INDEX IF NOT EXISTS idx_results_date        ON scan_results(scan_date);
         """)
+        # Migrate existing DBs — add pattern columns if they don't exist yet
+        for col_def in [
+            "ALTER TABLE scan_results ADD COLUMN pat_score          REAL",
+            "ALTER TABLE scan_results ADD COLUMN top_pattern        TEXT",
+            "ALTER TABLE scan_results ADD COLUMN has_bullish_pattern INTEGER",
+            "ALTER TABLE scan_results ADD COLUMN pat_support        REAL",
+            "ALTER TABLE scan_results ADD COLUMN pat_resistance     REAL",
+        ]:
+            try:
+                conn.execute(col_def)
+            except Exception:
+                pass  # column already exists
 
 
 def save_scan(results: list, universe: str, config: dict) -> int:
@@ -101,8 +113,9 @@ def save_scan(results: list, universe: str, config: dict) -> int:
                 spy_correlation, is_macro_correlated,
                 roe, debt_to_equity, revenue_growth, earnings_growth,
                 was_in_uptrend, adx, rsi_at_bottom, near_support,
-                sector, industry, reason
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                sector, industry, reason,
+                pat_score, top_pattern, has_bullish_pattern, pat_support, pat_resistance
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, rows)
 
     return run_id
@@ -113,6 +126,15 @@ def _flatten_result(r, run_id, scan_date, run_at) -> tuple:
     t = r.technical
     c = r.correction
     n = r.news
+    p = r.pattern
+    # Build top pattern label (▲ bullish / ▼ bearish)
+    top_pattern_label = None
+    if p and p.has_bullish_pattern and p.top_pattern_name:
+        top_pattern_label = f"▲ {p.top_pattern_name}"
+    elif p and p.patterns_detected:
+        bearish = [pm for pm in p.patterns_detected if pm.signal == "bearish"]
+        if bearish:
+            top_pattern_label = f"▼ {bearish[0].name}"
     return (
         run_id, scan_date, run_at, r.symbol, r.signal, r.composite_score,
         f.score if f else None,
@@ -135,6 +157,11 @@ def _flatten_result(r, run_id, scan_date, run_at) -> tuple:
         c.rsi_at_bottom if c else None,
         int(c.is_near_support) if c else None,
         r.sector, r.industry, r.reason,
+        round(p.score, 1) if p else None,
+        top_pattern_label,
+        int(p.has_bullish_pattern) if p else None,
+        p.nearest_support_price if p else None,
+        p.nearest_resistance_price if p else None,
     )
 
 

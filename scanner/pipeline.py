@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 
 from data import fetcher
-from scanner import correction, fundamental, news_classifier, scorer, technical
+from scanner import correction, fundamental, news_classifier, patterns, scorer, technical
 from scanner.models import CompositeResult
 
 logger = logging.getLogger(__name__)
@@ -46,8 +46,9 @@ def scan_ticker(symbol: str, config: dict, use_cache: bool = True) -> Optional[C
             logger.debug(f"{symbol}: correction too small ({corr_result.correction_pct:.1%})")
             return None
 
-        tech = technical.score(data, config, correction_days=corr_days)
-        news = news_classifier.classify(data, config)
+        tech    = technical.score(data, config, correction_days=corr_days)
+        news    = news_classifier.classify(data, config)
+        pattern = patterns.score(data, config)
 
         return scorer.compute(
             symbol=symbol,
@@ -56,6 +57,7 @@ def scan_ticker(symbol: str, config: dict, use_cache: bool = True) -> Optional[C
             corr=corr_result,
             news=news,
             config=config,
+            pattern=pattern,
             current_price=fi.get("last_price"),
             year_high=fi.get("year_high"),
             sector=data.info.get("sector"),

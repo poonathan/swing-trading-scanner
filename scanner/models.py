@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass
@@ -72,6 +72,22 @@ class NewsResult:
 
 
 @dataclass
+class PatternResult:
+    symbol: str
+    score: float                              # 0–100; 50 = neutral
+    patterns_detected: List = field(default_factory=list)   # List[PatternMatch]
+    sr_levels: List = field(default_factory=list)           # List[SRLevel]
+    nearest_support_price: Optional[float] = None
+    nearest_support_strength: Optional[float] = None
+    nearest_resistance_price: Optional[float] = None
+    has_bullish_pattern: bool = False
+    top_pattern_name: Optional[str] = None
+    top_pattern_confidence: Optional[float] = None
+    top_pattern_key_price: Optional[float] = None
+    pattern_count: int = 0
+
+
+@dataclass
 class CompositeResult:
     symbol: str
     composite_score: float
@@ -79,6 +95,7 @@ class CompositeResult:
     technical: Optional[TechnicalResult] = None
     correction: Optional[CorrectionResult] = None
     news: Optional[NewsResult] = None
+    pattern: Optional[PatternResult] = None
     signal: str = "AVOID"  # "BUY_DIP" | "WATCH" | "AVOID" | "INSUFFICIENT_DATA"
     reason: str = ""
     current_price: Optional[float] = None

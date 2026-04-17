@@ -3,8 +3,17 @@ from scanner.models import (
     CorrectionResult,
     FundamentalResult,
     NewsResult,
+    PatternResult,
     TechnicalResult,
 )
+
+_DEFAULT_WEIGHTS = {
+    "fundamental": 0.30,
+    "technical":   0.25,
+    "correction":  0.22,
+    "news":        0.08,
+    "pattern":     0.15,
+}
 
 
 def compute(
@@ -14,25 +23,20 @@ def compute(
     corr: CorrectionResult,
     news: NewsResult,
     config: dict,
+    pattern: PatternResult = None,
     current_price: float = None,
     year_high: float = None,
     sector: str = None,
     industry: str = None,
 ) -> CompositeResult:
-    weights = config.get("scoring", {}).get("weights", {
-        "fundamental": 0.35,
-        "technical": 0.30,
-        "correction": 0.25,
-        "news": 0.10,
-    })
-    min_composite = config.get("scoring", {}).get("min_composite_score", 60)
+    weights = config.get("scoring", {}).get("weights", _DEFAULT_WEIGHTS)
 
     # Hard gate 1: fundamental breakdown
     if not fund.pass_gate:
         return CompositeResult(
             symbol=symbol,
             composite_score=fund.score,
-            fundamental=fund, technical=tech, correction=corr, news=news,
+            fundamental=fund, technical=tech, correction=corr, news=news, pattern=pattern,
             signal="AVOID",
             reason=f"Fundamental gate failed: {fund.fail_reason}",
             current_price=current_price, year_high=year_high,
@@ -43,8 +47,8 @@ def compute(
     if not news.is_safe and news.confidence >= 0.5:
         return CompositeResult(
             symbol=symbol,
-            composite_score=fund.score * weights["fundamental"],
-            fundamental=fund, technical=tech, correction=corr, news=news,
+            composite_score=fund.score * weights.get("fundamental", 0.30),
+            fundamental=fund, technical=tech, correction=corr, news=news, pattern=pattern,
             signal="AVOID",
             reason=f"Fundamental deterioration in news ({news.event_type}, conf={news.confidence:.0%})",
             current_price=current_price, year_high=year_high,
@@ -56,18 +60,32 @@ def compute(
         return CompositeResult(
             symbol=symbol,
             composite_score=0.0,
-            fundamental=fund, technical=tech, correction=corr, news=news,
+            fundamental=fund, technical=tech, correction=corr, news=news, pattern=pattern,
             signal="AVOID",
             reason=f"No correction detected ({corr.correction_pct:.1%} drop, minimum required)",
             current_price=current_price, year_high=year_high,
             sector=sector, industry=industry,
         )
 
+    # Normalise weights so they always sum to 1.0 regardless of config
+    w_fund  = weights.get("fundamental", 0.30)
+    w_tech  = weights.get("technical",   0.25)
+    w_corr  = weights.get("correction",  0.22)
+    w_news  = weights.get("news",        0.08)
+    w_pat   = weights.get("pattern",     0.15)
+    total_w = w_fund + w_tech + w_corr + w_news + w_pat
+    if total_w > 0:
+        w_fund /= total_w; w_tech /= total_w; w_corr /= total_w
+        w_news /= total_w; w_pat  /= total_w
+
+    pat_score = pattern.score if pattern is not None else 50.0  # neutral fallback
+
     composite = (
-        fund.score * weights.get("fundamental", 0.35)
-        + tech.score * weights.get("technical", 0.30)
-        + corr.score * weights.get("correction", 0.25)
-        + news.score * weights.get("news", 0.10)
+        fund.score  * w_fund +
+        tech.score  * w_tech +
+        corr.score  * w_corr +
+        news.score  * w_news +
+        pat_score   * w_pat
     )
     composite = round(composite, 1)
 
@@ -82,12 +100,12 @@ def compute(
     else:
         signal = "AVOID"
 
-    reason = _build_reason(fund, tech, corr, news, composite, signal)
+    reason = _build_reason(fund, tech, corr, news, pattern, composite, signal)
 
     return CompositeResult(
         symbol=symbol,
         composite_score=composite,
-        fundamental=fund, technical=tech, correction=corr, news=news,
+        fundamental=fund, technical=tech, correction=corr, news=news, pattern=pattern,
         signal=signal,
         reason=reason,
         current_price=current_price,
@@ -98,7 +116,7 @@ def compute(
     )
 
 
-def _build_reason(fund, tech, corr, news, composite, signal) -> str:
+def _build_reason(fund, tech, corr, news, pattern, composite, signal) -> str:
     parts = []
     if fund.score >= 70:
         parts.append("strong fundamentals")
@@ -116,4 +134,9 @@ def _build_reason(fund, tech, corr, news, composite, signal) -> str:
         parts.append("correlated with SPY drop")
     if corr.is_near_support:
         parts.append("near support")
+    if pattern is not None:
+        if pattern.has_bullish_pattern and pattern.top_pattern_name:
+            parts.append(f"{pattern.top_pattern_name} pattern")
+        if pattern.nearest_support_price:
+            parts.append(f"S/R support ${pattern.nearest_support_price:.2f}")
     return "; ".join(parts) if parts else f"composite={composite}"
