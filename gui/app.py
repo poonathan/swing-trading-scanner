@@ -48,19 +48,49 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.markdown("""
+_LIGHT_CSS = """
 <style>
     div[data-testid="metric-container"] {
-        border: 1px solid #e0e0e0;
-        border-radius: 10px;
-        padding: 12px 16px;
-        background: #fafafa;
+        border: 1px solid #e0e0e0; border-radius: 10px;
+        padding: 12px 16px; background: #fafafa;
     }
     .stProgress > div > div > div { background-color: #28a745; }
     .block-container { padding-top: 1.5rem; }
     thead tr th { background: #f0f2f6 !important; font-weight: 600 !important; }
 </style>
-""", unsafe_allow_html=True)
+"""
+
+_DARK_CSS = """
+<style>
+    .stApp, [data-testid="stAppViewContainer"], .main, .block-container {
+        background-color: #0d1117 !important; color: #e6edf3 !important;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #161b22 !important; border-right: 1px solid #30363d !important;
+    }
+    div[data-testid="metric-container"] {
+        background: #21262d !important; border-color: #30363d !important;
+        border-radius: 10px; padding: 12px 16px;
+    }
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] li,
+    .stCaption, label { color: #adbac7 !important; }
+    h1, h2, h3, h4 { color: #f0f6fc !important; }
+    .stTextInput input, .stNumberInput input,
+    [data-baseweb="select"] > div {
+        background-color: #21262d !important; color: #e6edf3 !important;
+        border-color: #444c56 !important;
+    }
+    [data-testid="stExpander"] { background-color: #161b22 !important; border-color: #30363d !important; }
+    button[kind="secondary"] { background-color: #21262d !important; color: #e6edf3 !important; border-color: #444c56 !important; }
+    thead tr th { background: #21262d !important; color: #e6edf3 !important; font-weight: 600 !important; }
+    .block-container { padding-top: 1.5rem; }
+    hr { border-color: #30363d !important; }
+</style>
+"""
+
+_dark = st.session_state.get("dark_mode", False)
+st.markdown(_DARK_CSS if _dark else _LIGHT_CSS, unsafe_allow_html=True)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -101,11 +131,30 @@ with st.sidebar:
     st.divider()
     st.caption(f"Total scans: **{stats['total_runs']}**")
     st.caption(f"Symbols tracked: **{stats['unique_symbols']}**")
+    st.divider()
+    dark_toggle = st.toggle("🌙 Dark Mode", value=st.session_state.get("dark_mode", False), key="dark_mode")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _SIG_EMOJI = {"BUY_DIP": "🟢", "WATCH": "🟡", "AVOID": "🔴"}
 _SIG_COLOR = {"BUY_DIP": _BUY_COLOR, "WATCH": _WATCH_COLOR, "AVOID": _AVOID_COLOR}
+
+
+def _fmt_cap(val) -> str:
+    if not val:
+        return "—"
+    if val >= 1e12:  return f"${val/1e12:.2f}T"
+    if val >= 1e9:   return f"${val/1e9:.1f}B"
+    if val >= 1e6:   return f"${val/1e6:.1f}M"
+    return f"${val:,.0f}"
+
+
+def _fmt_vol(val) -> str:
+    if not val:
+        return "—"
+    if val >= 1e6: return f"{val/1e6:.1f}M"
+    if val >= 1e3: return f"{val/1e3:.0f}K"
+    return str(int(val))
 
 
 def _display_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -844,6 +893,10 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
     news        = payload["news"]
     pattern     = payload["pattern"]
     data        = payload["data"]
+    dark        = st.session_state.get("dark_mode", False)
+    bg_color    = "#0d1117" if dark else "white"
+    grid_color  = "#2d333b" if dark else "#f0f0f0"
+    spike_color = "#6e7681" if dark else "#999"
 
     # ── Signal banner ─────────────────────────────────────────────────────────
     sig_emoji = _SIG_EMOJI.get(result.signal, "⚪")
@@ -951,14 +1004,45 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                               annotation_font_size=10, annotation_font_color=color,
                               row=1, col=1)
 
+            # Row 1 — Pattern key levels: shaded band + bold line + triangle markers
             for pm in pattern.patterns_detected:
-                if pm.key_price:
-                    kcolor = "#8e44ad" if pm.signal == "bullish" else "#c0392b"
-                    fig.add_hline(y=pm.key_price, line_dash="solid", line_color=kcolor, line_width=2,
-                                  annotation_text=f"[{pm.name[:12]}] ${pm.key_price:.2f}",
-                                  annotation_position="left",
-                                  annotation_font_size=10, annotation_font_color=kcolor,
-                                  row=1, col=1)
+                if not pm.key_price:
+                    continue
+                kcolor = "#8e44ad" if pm.signal == "bullish" else "#c0392b"
+                sig_icon = "▲" if pm.signal == "bullish" else "▼"
+                # Highlight band ±0.8% around key level
+                fig.add_hrect(
+                    y0=pm.key_price * 0.992, y1=pm.key_price * 1.008,
+                    fillcolor=kcolor, opacity=0.12, line_width=0,
+                    row=1, col=1,
+                )
+                # Bold line with coloured annotation box
+                fig.add_hline(
+                    y=pm.key_price, line_dash="solid", line_color=kcolor, line_width=2.5,
+                    annotation_text=f" {sig_icon} {pm.name[:14]} ({pm.confidence:.0%}) ",
+                    annotation_position="left",
+                    annotation_bgcolor=kcolor,
+                    annotation_font_size=10, annotation_font_color="white",
+                    row=1, col=1,
+                )
+                # Triangle markers at bars touching the level
+                ptol = 0.015
+                if pm.signal == "bullish":
+                    mask = (window["Low"] - pm.key_price).abs() / max(pm.key_price, 0.01) < ptol
+                    y_mark = window.loc[mask, "Low"] * 0.993
+                    msym = "triangle-up"
+                else:
+                    mask = (window["High"] - pm.key_price).abs() / max(pm.key_price, 0.01) < ptol
+                    y_mark = window.loc[mask, "High"] * 1.007
+                    msym = "triangle-down"
+                if mask.any():
+                    fig.add_trace(go.Scatter(
+                        x=window.index[mask], y=y_mark, mode="markers",
+                        name=f"{sig_icon} {pm.name}",
+                        marker=dict(symbol=msym, size=13, color=kcolor,
+                                    line=dict(color="white", width=1.5)),
+                        showlegend=True,
+                    ), row=1, col=1)
 
             vol_colors = [
                 "#27ae60" if float(c) >= float(o) else "#e74c3c"
@@ -972,14 +1056,27 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
             ), row=2, col=1)
 
             fig.update_layout(
-                height=540, margin=dict(t=10, b=10, l=10, r=140),
-                hovermode="x unified", plot_bgcolor="white",
-                legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0),
+                height=560, margin=dict(t=10, b=10, l=10, r=150),
+                hovermode="x unified",
+                spikedistance=200, hoverdistance=50,
+                plot_bgcolor=bg_color, paper_bgcolor=bg_color,
+                legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0,
+                            font=dict(size=11)),
                 xaxis_rangeslider_visible=False,
             )
-            fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=1, col=1)
-            fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=2, col=1)
-            fig.update_yaxes(title_text="Price ($)", showgrid=True, gridcolor="#f0f0f0", row=1, col=1)
+            # Crosshair: spike lines on both axes
+            fig.update_xaxes(showgrid=True, gridcolor=grid_color,
+                             showspikes=True, spikemode="across", spikesnap="cursor",
+                             spikecolor=spike_color, spikethickness=1, spikedash="dot",
+                             row=1, col=1)
+            fig.update_xaxes(showgrid=True, gridcolor=grid_color,
+                             showspikes=True, spikemode="across", spikesnap="cursor",
+                             spikecolor=spike_color, spikethickness=1, spikedash="dot",
+                             row=2, col=1)
+            fig.update_yaxes(title_text="Price ($)", showgrid=True, gridcolor=grid_color,
+                             showspikes=True, spikecolor=spike_color,
+                             spikethickness=1, spikedash="dot",
+                             row=1, col=1)
             fig.update_yaxes(title_text="Volume", showgrid=False, row=2, col=1)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -1080,9 +1177,47 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
     with col_detail:
         st.subheader("📋 Analysis Detail")
-        tab_fund, tab_tech, tab_corr, tab_news, tab_val, tab_analyst, tab_own = st.tabs(
-            ["Fundamental", "Technical", "Correction", "News", "Valuation", "Analyst", "Ownership"]
+        tab_overview, tab_fund, tab_tech, tab_corr, tab_news, tab_val, tab_analyst, tab_own = st.tabs(
+            ["Overview", "Fundamental", "Technical", "Correction", "News", "Valuation", "Analyst", "Ownership"]
         )
+
+        with tab_overview:
+            info = data.info
+            fi   = data.fast_info
+            # Company description
+            summary = info.get("longBusinessSummary", "")
+            if summary:
+                st.markdown(f"**{info.get('longName', symbol)}** — {info.get('sector','')}, {info.get('industry','')}")
+                st.caption(summary[:500] + ("…" if len(summary) > 500 else ""))
+                st.divider()
+            # Key company stats
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("Market Cap",   _fmt_cap(info.get("marketCap") or fi.get("market_cap")))
+            mc2.metric("Employees",    f"{info['fullTimeEmployees']:,}" if info.get("fullTimeEmployees") else "—")
+            mc3.metric("Avg Vol (3M)", _fmt_vol(info.get("averageVolume")),
+                       help="Average daily trading volume over the past 3 months")
+            mc4.metric("Exchange",     info.get("exchange", "—"))
+            mc5, mc6, mc7, mc8 = st.columns(4)
+            mc5.metric("Country",  info.get("country", "—"))
+            mc6.metric("Currency", info.get("currency", "USD"))
+            mc7.metric("Avg Vol (10d)", _fmt_vol(info.get("averageVolume10days")),
+                       help="Average daily volume over the past 10 days vs. 3-month average — elevated = increased interest")
+            site = info.get("website", "")
+            mc8.metric("Website", site[:30] if site else "—")
+            # 52-week range
+            yr_h = fi.get("year_high")
+            yr_l = fi.get("year_low")
+            px   = result.current_price
+            if yr_h or yr_l:
+                st.divider()
+                r1, r2, r3, r4 = st.columns(4)
+                r1.metric("52-Week High", f"${yr_h:.2f}" if yr_h else "—")
+                r2.metric("52-Week Low",  f"${yr_l:.2f}" if yr_l else "—")
+                if yr_h and px:
+                    r3.metric("Off 52W High", f"-{(yr_h-px)/yr_h*100:.1f}%", delta_color="off",
+                              help="How far below the 52-week high the stock is currently trading")
+                if yr_l and px:
+                    r4.metric("Above 52W Low", f"+{(px-yr_l)/yr_l*100:.1f}%", delta_color="off")
 
         with tab_fund:
             if fund:
@@ -1093,35 +1228,75 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                     st.info("**Neutral** — acceptable fundamentals; not a headwind to the trade.")
                 else:
                     st.warning("**Bearish** — weak fundamentals add risk. Verify this is a temporary correction, not deterioration.")
-                # Key observations
+                # Recovery thesis
+                info_f = data.info
+                t_eps = info_f.get("trailingEps")
+                f_eps = info_f.get("forwardEps")
+                fcf   = fund.free_cash_flow
+                robs = []
+                if fund.score >= 60: robs.append("Fundamentals are solid enough to survive the dip and recover.")
+                if fund.revenue_growth_yoy and fund.revenue_growth_yoy > 0:
+                    robs.append(f"Revenue is growing ({fund.revenue_growth_yoy:.1%}) — earnings power is intact.")
+                if fcf and fcf > 0: robs.append("Positive free cash flow — the company is self-funding and not burning cash during this correction.")
+                if t_eps and t_eps > 0: robs.append(f"EPS is positive ({t_eps:.2f}) — the business is currently profitable.")
+                if f_eps and t_eps and f_eps > t_eps: robs.append(f"Forward EPS ({f_eps:.2f}) > trailing ({t_eps:.2f}) — analysts expect earnings to grow, validating recovery.")
+                de = fund.debt_to_equity
+                if de and de < 1.0: robs.append("Low leverage means the company can sustain itself through the dip without refinancing risk.")
+                for o in robs[:4]:
+                    st.caption(f"• {o}")
+                # Observations
                 obs = []
                 roe = fund.return_on_equity
                 if roe is not None:
-                    if roe > 0.20:   obs.append(f"Excellent ROE of {roe:.1%} — management creates strong shareholder value.")
-                    elif roe > 0.10: obs.append(f"Solid ROE of {roe:.1%} — profitable and efficient.")
-                    elif roe > 0:    obs.append(f"Below-average ROE of {roe:.1%} — limited equity returns.")
-                    else:            obs.append(f"Negative ROE ({roe:.1%}) — currently unprofitable; verify it is temporary.")
-                de = fund.debt_to_equity
+                    if roe > 0.20:   obs.append(f"Excellent ROE {roe:.1%} — management creates strong shareholder value.")
+                    elif roe > 0.10: obs.append(f"Solid ROE {roe:.1%} — profitable and efficient.")
+                    elif roe > 0:    obs.append(f"Below-average ROE {roe:.1%} — limited equity returns.")
+                    else:            obs.append(f"Negative ROE {roe:.1%} — currently unprofitable; verify it is temporary.")
                 if de is not None:
-                    if de < 0.3:   obs.append("Very low debt — resilient balance sheet, buffer against downturns.")
-                    elif de < 1.0: obs.append(f"Moderate leverage (D/E {de:.1f}) — manageable; watch in rising rate environment.")
-                    else:          obs.append(f"High leverage (D/E {de:.1f}) — elevated financial risk; rate sensitivity.")
+                    if de < 0.3:   obs.append("Very low debt — resilient balance sheet.")
+                    elif de < 1.0: obs.append(f"Moderate leverage D/E {de:.1f} — manageable.")
+                    else:          obs.append(f"High leverage D/E {de:.1f} — rate-sensitive; watch carefully.")
                 rg = fund.revenue_growth_yoy
                 if rg is not None:
-                    if rg > 0.15:  obs.append(f"Strong revenue growth of {rg:.1%} — demand is expanding.")
-                    elif rg > 0.0: obs.append(f"Moderate growth of {rg:.1%} — stable, not exciting.")
+                    if rg > 0.15:  obs.append(f"Strong revenue growth {rg:.1%} YoY.")
+                    elif rg > 0:   obs.append(f"Moderate growth {rg:.1%} YoY.")
                     else:          obs.append(f"Revenue declining {rg:.1%} — investigate if structural or cyclical.")
                 for o in obs:
                     st.caption(f"• {o}")
                 st.divider()
+                # Core metrics row
                 cols = st.columns(3)
                 cols[0].metric("ROE", f"{fund.return_on_equity:.1%}" if fund.return_on_equity else "—")
-                cols[1].metric("D/E", f"{fund.debt_to_equity:.2f}" if fund.debt_to_equity else "—")
+                cols[1].metric("D/E Ratio", f"{fund.debt_to_equity:.2f}" if fund.debt_to_equity else "—")
                 cols[2].metric("Gross Margin", f"{fund.gross_margins:.1%}" if fund.gross_margins else "—")
                 cols2 = st.columns(3)
                 cols2[0].metric("Rev Growth YoY", f"{fund.revenue_growth_yoy:.1%}" if fund.revenue_growth_yoy else "—")
                 cols2[1].metric("Earnings Growth", f"{fund.earnings_growth:.1%}" if fund.earnings_growth else "—")
                 cols2[2].metric("P/E", f"{fund.pe_ratio:.1f}" if fund.pe_ratio else "—")
+                # EPS row
+                st.caption("**Earnings per Share**")
+                e1, e2, e3 = st.columns(3)
+                e1.metric("Trailing EPS", f"${t_eps:.2f}" if t_eps else "—",
+                          help="Earnings per share over the trailing 12 months. Positive = profitable.")
+                e2.metric("Forward EPS", f"${f_eps:.2f}" if f_eps else "—",
+                          help="Estimated EPS for the next 12 months. Rising > trailing = growth trajectory.")
+                eps_growth = (f_eps - t_eps) / abs(t_eps) if f_eps and t_eps and t_eps != 0 else None
+                e3.metric("EPS Growth (est.)", f"{eps_growth:+.1%}" if eps_growth is not None else "—",
+                          help="Expected change from trailing to forward EPS — proxy for near-term earnings momentum.")
+                # Debt health row
+                st.caption("**Debt & Liquidity**")
+                d1, d2, d3, d4 = st.columns(4)
+                total_debt = info_f.get("totalDebt")
+                total_cash = info_f.get("totalCash")
+                net_debt   = (total_debt - total_cash) if total_debt and total_cash else None
+                d1.metric("Total Debt",    _fmt_cap(total_debt),
+                          help="Total interest-bearing debt on the balance sheet.")
+                d2.metric("Total Cash",    _fmt_cap(total_cash),
+                          help="Cash and short-term investments. High cash = buffer against downturn.")
+                d3.metric("Net Debt",      _fmt_cap(net_debt) if net_debt else "—",
+                          help="Total Debt minus Cash. Negative = net cash position (very healthy).")
+                d4.metric("Current Ratio", f"{fund.current_ratio:.2f}" if fund.current_ratio else "—",
+                          help="Current assets / current liabilities. > 1.5 = strong short-term liquidity.")
 
         with tab_tech:
             if tech:
@@ -1341,7 +1516,7 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
 def page_deep_dive():
     st.title("🔎 Deep Dive Analysis")
-    st.caption("On-demand full analysis: price chart with S/R levels, pattern detection, and all dimension scores.")
+    st.caption("Full single-ticker analysis — chart with S/R & patterns, fundamentals, risk/reward, analyst consensus.")
 
     # Pre-fill symbol from row-click navigation
     nav_sym = st.session_state.pop("deep_dive_nav_symbol", None)
@@ -1354,6 +1529,16 @@ def page_deep_dive():
         "Symbol", placeholder="NVDA", label_visibility="collapsed", key="dd_symbol_input",
     ).upper().strip()
     analyze = col_btn.button("🔍 Analyze", use_container_width=True, type="primary")
+
+    # Quick-pick: recently cached analyses (persist across navigation within session)
+    cached_syms = sorted(k[9:] for k in st.session_state if k.startswith("dd_cache_"))
+    if cached_syms:
+        st.caption("Recently analyzed (click to reload):")
+        pick_cols = st.columns(min(len(cached_syms), 8))
+        for i, s in enumerate(cached_syms[:8]):
+            if pick_cols[i].button(s, key=f"dd_pick_{s}", use_container_width=True):
+                st.session_state["dd_symbol_input"] = s
+                st.rerun()
 
     # Cache age + refresh row (shown only when a cached result exists)
     cache_key = f"dd_cache_{symbol}" if symbol else None
