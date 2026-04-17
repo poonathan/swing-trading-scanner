@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import yaml
 
@@ -153,6 +154,67 @@ def _score_bar(df: pd.DataFrame) -> "pd.Styler":
     return s
 
 
+# ── Column guide tooltip ─────────────────────────────────────────────────────
+
+def _col_guide():
+    with st.expander("📖 Column guide — what do these columns mean?", expanded=False):
+        st.markdown("""
+| Column | What it means |
+|--------|--------------|
+| **Score** | Composite 0–100. **BUY DIP ≥ 72**, WATCH ≥ 58, below = Avoid |
+| **Fund** | Fundamental score (ROE, D/E ratio, revenue growth, free cash flow, earnings) — 30% weight |
+| **Tech** | Technical score (SMA 50/200, ADX trend strength, RSI, MACD, OBV, higher-highs/lows) — 25% weight |
+| **Corr** | Correction quality (drop depth 5–15%, low-volume selloff, near S/R support, RSI oversold) — 22% weight |
+| **News** | News event type — *macro/sector/unrelated* = good (not the company's fault), *fundamental* = avoid — 8% weight |
+| **Pat** | Chart pattern score: 50 = neutral, > 50 = bullish setups found, < 50 = bearish patterns present — 15% weight |
+| **Pattern** | Top detected chart pattern (▲ bullish reversal/continuation, ▼ bearish) |
+| **Drop%** | How far the price has fallen from its recent high — sweet spot is 5–15% |
+| **VolRt** | Volume during the correction vs 20-day average. **< 0.85x = healthy** (low-volume selloff, no panic selling) |
+| **Event** | What triggered the drop: *macro* (Fed/rates), *sector* (industry news), *unrelated*, or *fundamental* (company-specific bad news) |
+| **Price** | Latest market price |
+        """)
+
+
+# ── Signal strength gauge ─────────────────────────────────────────────────────
+
+def _signal_gauge(score: float, title: str = "Composite Score") -> go.Figure:
+    """Speedometer gauge showing composite score vs BUY DIP / WATCH thresholds."""
+    if score >= _BUY_THRESH:
+        bar_color = _BUY_COLOR
+    elif score >= _WATCH_THRESH:
+        bar_color = _WATCH_COLOR
+    else:
+        bar_color = _AVOID_COLOR
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score,
+        title={"text": title, "font": {"size": 13}},
+        number={"font": {"size": 32, "color": bar_color}, "suffix": "/100"},
+        gauge={
+            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#bbb",
+                     "tickvals": [0, _WATCH_THRESH, _BUY_THRESH, 100],
+                     "ticktext": ["0", f"WATCH\n{_WATCH_THRESH}", f"BUY\n{_BUY_THRESH}", "100"]},
+            "bar": {"color": bar_color, "thickness": 0.28},
+            "bgcolor": "white",
+            "borderwidth": 1,
+            "bordercolor": "#e0e0e0",
+            "steps": [
+                {"range": [0, _WATCH_THRESH],  "color": "#ffeaea"},
+                {"range": [_WATCH_THRESH, _BUY_THRESH], "color": "#fff8e1"},
+                {"range": [_BUY_THRESH, 100],  "color": "#e8f5e9"},
+            ],
+            "threshold": {
+                "line": {"color": _BUY_COLOR, "width": 3},
+                "thickness": 0.75,
+                "value": _BUY_THRESH,
+            },
+        },
+    ))
+    fig.update_layout(height=220, margin=dict(t=40, b=10, l=20, r=20), paper_bgcolor="white")
+    return fig
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 def page_dashboard():
@@ -170,12 +232,17 @@ def page_dashboard():
 
     # KPI row
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("🟢 BUY DIP", len(buy_dip))
-    c2.metric("🟡 WATCH", len(watch))
-    c3.metric("⬆️ Upgrades", len(upgrades), help="Stocks that moved from WATCH/AVOID → BUY_DIP vs previous scan")
-    c4.metric("📊 Scanned", len(latest))
+    c1.metric("🟢 BUY DIP", len(buy_dip),
+              help=f"Stocks with composite score ≥ {_BUY_THRESH} AND correction ≥ 5% — strong buy-the-dip setup")
+    c2.metric("🟡 WATCH", len(watch),
+              help=f"Stocks with composite score ≥ {_WATCH_THRESH} — setup developing, worth monitoring")
+    c3.metric("⬆️ Upgrades", len(upgrades),
+              help="Stocks that moved from WATCH or AVOID → BUY DIP since the previous scan")
+    c4.metric("📊 Scanned", len(latest),
+              help="Total symbols processed in the latest scan run")
     lr = db.get_latest_run()
-    c5.metric("🕐 Scan Age", _scan_age(lr["run_at"]) if lr else "—")
+    c5.metric("🕐 Scan Age", _scan_age(lr["run_at"]) if lr else "—",
+              help="Time since the last scan was run. Data may be stale if > 4 hours old")
 
     st.divider()
 
@@ -184,6 +251,7 @@ def page_dashboard():
 
     with col_left:
         st.subheader(f"🟢 BUY DIP Opportunities ({len(buy_dip)})")
+        _col_guide()
         if not buy_dip.empty:
             disp = _display_cols(buy_dip)
             st.dataframe(_style_table(disp), use_container_width=True, height=280)
@@ -233,6 +301,7 @@ def page_dashboard():
     if not watch.empty:
         disp = _display_cols(watch)
         st.dataframe(_style_table(disp), use_container_width=True, height=320)
+        _col_guide()
 
 
 def _scan_age(run_at: str) -> str:
@@ -267,10 +336,14 @@ def page_scanner():
 
         st.subheader("Parameters")
         col1, col2, col3, col4 = st.columns(4)
-        min_score = col1.slider("Min Composite Score", 40, 85, 58, 1)
-        min_correction = col2.slider("Min Correction %", 2, 20, 4, 1)
-        workers = col3.slider("Parallel Workers", 1, 10, 5, 1)
-        use_cache = col4.checkbox("Use Cache", value=True, help="Skip re-fetching data fetched within last 4 hours")
+        min_score = col1.slider("Min Composite Score", 40, 85, 58, 1,
+            help=f"Only show results at or above this score. WATCH threshold = {_WATCH_THRESH}, BUY DIP = {_BUY_THRESH}")
+        min_correction = col2.slider("Min Correction %", 2, 20, 4, 1,
+            help="Only include stocks that have dropped at least this much from their recent high. Sweet spot is 5–15%")
+        workers = col3.slider("Parallel Workers", 1, 10, 5, 1,
+            help="Number of stocks fetched in parallel. Higher = faster scan but more network load")
+        use_cache = col4.checkbox("Use Cache", value=True,
+            help="Use locally cached data (up to 4h old for prices, 24h for fundamentals) to speed up the scan")
 
         submitted = st.form_submit_button("🔍 Run Scan", use_container_width=True, type="primary")
 
@@ -380,6 +453,7 @@ def page_scanner():
     } for r in sorted(display, key=lambda x: (x.signal != "BUY_DIP", -x.composite_score))])
 
     st.subheader("📊 Results")
+    _col_guide()
     disp = _display_cols(df)
     st.dataframe(_style_table(disp), use_container_width=True, height=420)
 
@@ -773,14 +847,24 @@ def page_deep_dive():
         unsafe_allow_html=True,
     )
 
-    # ── KPI row ───────────────────────────────────────────────────────────────
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("📊 Fundamental", f"{fund.score:.0f}/100")
-    c2.metric("📈 Technical",   f"{tech.score:.0f}/100")
-    c3.metric("📉 Correction",  f"{corr_result.score:.0f}/100",
-              delta=f"{corr_result.correction_pct:.1%} drop", delta_color="inverse")
-    c4.metric("📰 News",        f"{news.score:.0f}/100")
-    c5.metric("🔷 Pattern",     f"{pattern.score:.0f}/100")
+    # ── Signal gauge + KPI row ────────────────────────────────────────────────
+    g_col, k_col = st.columns([1, 3], gap="large")
+    with g_col:
+        st.plotly_chart(_signal_gauge(result.composite_score, f"{symbol} — Composite Score"),
+                        use_container_width=True)
+    with k_col:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("📊 Fundamental", f"{fund.score:.0f}/100",
+                  help="Scores ROE, debt/equity, revenue growth, free cash flow, and earnings growth. Weight: 30%")
+        c2.metric("📈 Technical", f"{tech.score:.0f}/100",
+                  help="Scores SMA 50/200 position, ADX trend strength, RSI momentum, MACD cross, OBV, higher-highs/lows. Weight: 25%")
+        c3.metric("📉 Correction", f"{corr_result.score:.0f}/100",
+                  delta=f"{corr_result.correction_pct:.1%} drop", delta_color="inverse",
+                  help="Scores correction depth (5–15% ideal), volume ratio during drop (<0.85x = healthy), proximity to support, RSI oversold. Weight: 22%")
+        c4.metric("📰 News", f"{news.score:.0f}/100",
+                  help="Classifies news as macro/sector/unrelated (good) vs fundamental deterioration (bad). Penalises analyst downgrades. Weight: 8%")
+        c5.metric("🔷 Pattern", f"{pattern.score:.0f}/100",
+                  help="Detects 8 chart patterns (Double Bottom, Bull Flag, Cup & Handle etc.). 50 = neutral, >50 = bullish setups, <50 = bearish. Weight: 15%")
 
     st.divider()
 
@@ -788,67 +872,135 @@ def page_deep_dive():
     col_chart, col_pat = st.columns([3, 1], gap="large")
 
     with col_chart:
-        st.subheader("📊 Price + Support / Resistance (90 days)")
+        # Timeline selector
+        tf_options = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252}
+        tf_key = f"dd_tf_{symbol}"
+        if tf_key not in st.session_state:
+            st.session_state[tf_key] = "3M"
+
+        tf_row = st.columns([1, 1, 1, 1, 6])
+        for i, tf_label in enumerate(tf_options):
+            btn_type = "primary" if st.session_state[tf_key] == tf_label else "secondary"
+            if tf_row[i].button(tf_label, use_container_width=True, type=btn_type, key=f"tf_{symbol}_{tf_label}"):
+                st.session_state[tf_key] = tf_label
+                st.rerun()
+
+        tf_bars = tf_options[st.session_state[tf_key]]
+        st.subheader(f"📊 Price + S/R  ·  {st.session_state[tf_key]} view",
+                     help="Green dashed = support levels · Red dashed = resistance · Purple solid = pattern key level · Orange/purple lines = SMA 50/200")
+
         hist = data.history
         if hist is not None and len(hist) >= 10:
-            window = hist.iloc[-90:]
-            fig = go.Figure()
+            n_bars = min(tf_bars, len(hist))
+            window = hist.iloc[-n_bars:]
+            close_full = hist["Close"].astype(float)
 
-            # Candlestick
+            # Compute SMAs on full history then slice to window
+            sma50  = close_full.rolling(50).mean().reindex(window.index)
+            sma200 = close_full.rolling(200).mean().reindex(window.index)
+
+            # Two-row subplot: price (75%) + volume (25%)
+            fig = make_subplots(
+                rows=2, cols=1,
+                row_heights=[0.75, 0.25],
+                vertical_spacing=0.03,
+                shared_xaxes=True,
+            )
+
+            # Row 1 — Candlestick
             fig.add_trace(go.Candlestick(
                 x=window.index,
                 open=window["Open"], high=window["High"],
                 low=window["Low"],   close=window["Close"],
                 name="Price",
-                increasing_line_color="#27ae60",
-                decreasing_line_color="#e74c3c",
-                increasing_fillcolor="#27ae60",
-                decreasing_fillcolor="#e74c3c",
-            ))
+                increasing_line_color="#27ae60", increasing_fillcolor="#27ae60",
+                decreasing_line_color="#e74c3c", decreasing_fillcolor="#e74c3c",
+                showlegend=False,
+            ), row=1, col=1)
 
-            # S/R horizontal lines
-            current_price = float(window["Close"].iloc[-1])
+            # Row 1 — SMA 50
+            sma50_clean = sma50.dropna()
+            if not sma50_clean.empty:
+                fig.add_trace(go.Scatter(
+                    x=sma50_clean.index, y=sma50_clean,
+                    mode="lines", name="SMA 50",
+                    line=dict(color="#FF9800", width=1.5),
+                    hovertemplate="SMA50: $%{y:.2f}<extra></extra>",
+                ), row=1, col=1)
+
+            # Row 1 — SMA 200
+            sma200_clean = sma200.dropna()
+            if not sma200_clean.empty:
+                fig.add_trace(go.Scatter(
+                    x=sma200_clean.index, y=sma200_clean,
+                    mode="lines", name="SMA 200",
+                    line=dict(color="#9C27B0", width=1.5),
+                    hovertemplate="SMA200: $%{y:.2f}<extra></extra>",
+                ), row=1, col=1)
+
+            # Row 1 — S/R lines
             for lv in pattern.sr_levels:
                 if lv.level_type == "support":
                     color, dash = "#27ae60", "dot"
+                    prefix = "S"
                 elif lv.level_type == "resistance":
                     color, dash = "#e74c3c", "dot"
+                    prefix = "R"
                 else:
                     color, dash = "#f39c12", "dot"
-                label = f"{'S' if lv.level_type == 'support' else 'R'} ${lv.price:.2f}"
+                    prefix = "S/R"
+                label = f"{prefix} ${lv.price:.2f}"
                 if lv.fib_label:
                     label += f" [{lv.fib_label}]"
                     dash = "dashdot"
                 fig.add_hline(
                     y=lv.price, line_dash=dash, line_color=color, line_width=1.5,
                     annotation_text=label, annotation_position="right",
-                    annotation_font_size=11, annotation_font_color=color,
+                    annotation_font_size=10, annotation_font_color=color,
+                    row=1, col=1,
                 )
 
-            # Key pattern breakout/breakdown levels (thicker, purple)
+            # Row 1 — Pattern key levels
             for pm in pattern.patterns_detected:
                 if pm.key_price:
                     kcolor = "#8e44ad" if pm.signal == "bullish" else "#c0392b"
                     fig.add_hline(
                         y=pm.key_price, line_dash="solid", line_color=kcolor, line_width=2,
-                        annotation_text=f"⚡ {pm.name} ${pm.key_price:.2f}",
+                        annotation_text=f"[{pm.name[:12]}] ${pm.key_price:.2f}",
                         annotation_position="left",
-                        annotation_font_size=11, annotation_font_color=kcolor,
+                        annotation_font_size=10, annotation_font_color=kcolor,
+                        row=1, col=1,
                     )
 
+            # Row 2 — Volume bars (green up-day, red down-day)
+            vol_colors = [
+                "#27ae60" if float(c) >= float(o) else "#e74c3c"
+                for c, o in zip(window["Close"], window["Open"])
+            ]
+            fig.add_trace(go.Bar(
+                x=window.index, y=window["Volume"],
+                marker_color=vol_colors, name="Volume",
+                opacity=0.7, showlegend=False,
+                hovertemplate="Vol: %{y:,.0f}<extra></extra>",
+            ), row=2, col=1)
+
             fig.update_layout(
-                height=440, margin=dict(t=20, b=10, l=10, r=120),
-                xaxis_title="Date", yaxis_title="Price ($)",
-                xaxis_rangeslider_visible=False,
-                hovermode="x unified", showlegend=False,
+                height=540,
+                margin=dict(t=10, b=10, l=10, r=140),
+                hovermode="x unified",
                 plot_bgcolor="white",
+                legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0),
+                xaxis_rangeslider_visible=False,
             )
-            fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0")
-            fig.update_yaxes(showgrid=True, gridcolor="#f0f0f0")
+            fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=1, col=1)
+            fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=2, col=1)
+            fig.update_yaxes(title_text="Price ($)", showgrid=True, gridcolor="#f0f0f0", row=1, col=1)
+            fig.update_yaxes(title_text="Volume",   showgrid=False, row=2, col=1)
             st.plotly_chart(fig, use_container_width=True)
 
     with col_pat:
-        st.subheader("📐 Detected Patterns")
+        st.subheader("📐 Detected Patterns",
+                     help="▲ = bullish (buy signal), ▼ = bearish (caution). Key level = price to watch for breakout/breakdown. Confidence = how cleanly the pattern fits.")
         if pattern.patterns_detected:
             for pm in sorted(pattern.patterns_detected, key=lambda x: -x.confidence):
                 icon  = "▲" if pm.signal == "bullish" else "▼"
@@ -861,7 +1013,8 @@ def page_deep_dive():
         else:
             st.info("No patterns detected in current data window.")
 
-        st.subheader("🔵 S/R Levels")
+        st.subheader("🔵 S/R Levels",
+                     help="Support (green) = price floor the stock tends to bounce from. Resistance (red) = ceiling it tends to stall at. Fibonacci levels are natural retracement zones (38.2%, 50%, 61.8%). Strength = touch count + volume + recency.")
         for lv in pattern.sr_levels[:6]:
             icon  = "🟢" if lv.level_type == "support" else ("🔴" if lv.level_type == "resistance" else "🟡")
             fib   = f" `{lv.fib_label}`" if lv.fib_label else ""

@@ -123,14 +123,16 @@ def _cluster_levels(
         if avg_price <= 0:
             continue
 
-        n_res = types.count("resistance")
-        n_sup = types.count("support")
-        if n_res > 0 and n_sup > 0:
-            ltype = "both"
-        elif n_res > 0:
+        # Classify by position relative to current price, not pivot direction.
+        # A past resistance pivot below the current price now acts as support,
+        # and a past support pivot above acts as resistance.
+        margin = 0.01  # within 1% of current price = "at price" → both
+        if avg_price < current_price * (1 - margin):
+            ltype = "support"
+        elif avg_price > current_price * (1 + margin):
             ltype = "resistance"
         else:
-            ltype = "support"
+            ltype = "both"
 
         touch_count = int(((all_prices - avg_price).abs() / avg_price < tol).sum())
 
