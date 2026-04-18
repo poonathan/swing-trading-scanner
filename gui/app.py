@@ -1566,6 +1566,15 @@ def page_deep_dive():
     st.title("🔎 Deep Dive Analysis")
     st.caption("Full single-ticker analysis — chart with S/R & patterns, fundamentals, risk/reward, analyst consensus.")
 
+    # Restore persisted analyses from DB into session state once per session
+    if not st.session_state.get("_dd_db_restored"):
+        from gui import db as _db
+        for sym, payload in _db.load_deep_dives().items():
+            key = f"dd_cache_{sym}"
+            if key not in st.session_state:
+                st.session_state[key] = payload
+        st.session_state["_dd_db_restored"] = True
+
     # Build dropdown options from previously analyzed symbols (persisted in session cache)
     cached_syms = sorted(k[9:] for k in st.session_state if k.startswith("dd_cache_"))
 
@@ -1663,6 +1672,8 @@ def page_deep_dive():
         "analyzed_at": datetime.now(), "deep_cfg": deep_cfg,
     }
     st.session_state[cache_key] = payload
+    from gui import db as _db
+    _db.save_deep_dive(symbol, payload)
     _render_dd_content(symbol, payload)
 
 

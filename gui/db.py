@@ -1,4 +1,5 @@
 import json
+import pickle
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -73,6 +74,12 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_results_run_id      ON scan_results(run_id);
             CREATE INDEX IF NOT EXISTS idx_results_signal      ON scan_results(signal);
             CREATE INDEX IF NOT EXISTS idx_results_date        ON scan_results(scan_date);
+
+            CREATE TABLE IF NOT EXISTS deep_dive_cache (
+                symbol      TEXT PRIMARY KEY,
+                analyzed_at TEXT NOT NULL,
+                payload     BLOB NOT NULL
+            );
         """)
         # Migrate existing DBs — add pattern columns if they don't exist yet
         for col_def in [
@@ -317,3 +324,32 @@ def get_score_deltas() -> pd.DataFrame:
             ORDER BY delta DESC
         """, (latest_id, prev_id)).fetchall()
     return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+
+
+# ── Deep Dive persistence ─────────────────────────────────────────────────────
+
+def save_deep_dive(symbol: str, payload: dict) -> None:
+    """Persist a Deep Dive analysis payload to SQLite as a pickle blob."""
+    blob = pickle.dumps(payload)
+    analyzed_at = payload["analyzed_at"].isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO deep_dive_cache (symbol, analyzed_at, payload)"
+            " VALUES (?,?,?)",
+            (symbol.upper(), analyzed_at, blob),
+        )
+
+
+def load_deep_dives() -> dict:
+    """Return {symbol: payload} for all persisted Deep Dive analyses, newest first."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT symbol, payload FROM deep_dive_cache ORDER BY analyzed_at DESC"
+        ).fetchall()
+    result = {}
+    for row in rows:
+        try:
+            result[row["symbol"]] = pickle.loads(row["payload"])
+        except Exception:
+            pass  # skip corrupt entries
+    return result
