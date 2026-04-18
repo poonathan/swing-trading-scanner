@@ -41,10 +41,13 @@ def find_sr_levels(
     )
     levels = _cluster_levels(raw, close, high, low, volume, tolerance_pct)
 
-    lookback = min(len(high), 90)
-    recent_high = float(high.iloc[-lookback:].max())
-    recent_low  = float(low.iloc[-lookback:].min())
-    levels += _fibonacci_levels(recent_low, recent_high, close, tolerance_pct)
+    # Detect trend direction to decide fib anchor and skip if no clear trend
+    trend = _detect_trend(close)
+    if trend is not None:
+        lookback = min(len(high), 90)
+        recent_high = float(high.iloc[-lookback:].max())
+        recent_low  = float(low.iloc[-lookback:].min())
+        levels += _fibonacci_levels(recent_low, recent_high, close, tolerance_pct, trend)
 
     levels = _deduplicate(levels, tolerance_pct)
     levels.sort(key=lambda x: -x.strength)
@@ -162,7 +165,23 @@ def _cluster_levels(
     return result
 
 
-def _fibonacci_levels(low: float, high: float, close: pd.Series, tol: float) -> List[SRLevel]:
+def _detect_trend(close: pd.Series, lookback: int = 63, threshold: float = 0.05) -> Optional[str]:
+    """Return 'up', 'down', or None (no clear trend) based on 3-month price momentum."""
+    if len(close) < lookback:
+        return None
+    pct = (float(close.iloc[-1]) - float(close.iloc[-lookback])) / float(close.iloc[-lookback])
+    if pct > threshold:
+        return "up"
+    if pct < -threshold:
+        return "down"
+    return None
+
+
+def _fibonacci_levels(low: float, high: float, close: pd.Series, tol: float, trend: str) -> List[SRLevel]:
+    """
+    Uptrend: retracement from recent swing low → high (pullback support zones).
+    Downtrend: retracement from recent swing high → low (bounce resistance zones).
+    """
     if high <= low:
         return []
     current_price = float(close.iloc[-1])
@@ -171,7 +190,9 @@ def _fibonacci_levels(low: float, high: float, close: pd.Series, tol: float) -> 
     labels = ["23.6%", "38.2%", "50.0%", "61.8%", "78.6%"]
     result = []
     for ratio, label in zip(ratios, labels):
-        fib_price = high - diff * ratio
+        # Uptrend: levels count down from high (pullback support)
+        # Downtrend: levels count up from low (bounce resistance)
+        fib_price = (high - diff * ratio) if trend == "up" else (low + diff * ratio)
         pct_away = abs(fib_price - current_price) / current_price
         if pct_away > 0.20:
             continue

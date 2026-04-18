@@ -998,17 +998,26 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                     hovertemplate="SMA200: $%{y:.2f}<extra></extra>",
                 ), row=1, col=1)
 
-            for lv in pattern.sr_levels:
+            # Pivot S/R: cap at 3 support + 3 resistance (strongest first, already sorted)
+            _pivot = [lv for lv in pattern.sr_levels if not lv.fib_label]
+            _fib   = [lv for lv in pattern.sr_levels if lv.fib_label]
+            _sup3  = [lv for lv in _pivot if lv.level_type in ("support", "both")][:3]
+            _res3  = [lv for lv in _pivot if lv.level_type in ("resistance", "both")][:3]
+            chart_levels = _sup3 + _res3 + _fib
+
+            for lv in chart_levels:
                 if lv.level_type == "support":
-                    color, dash, prefix = "#27ae60", "dot", "S"
+                    color, prefix = "#27ae60", "S"
                 elif lv.level_type == "resistance":
-                    color, dash, prefix = "#e74c3c", "dot", "R"
+                    color, prefix = "#e74c3c", "R"
                 else:
-                    color, dash, prefix = "#f39c12", "dot", "S/R"
-                label = f"{prefix} ${lv.price:.2f}"
+                    color, prefix = "#f39c12", "S/R"
                 if lv.fib_label:
-                    label += f" [{lv.fib_label}]"
                     dash = "dashdot"
+                    label = f"Fib {lv.fib_label} ${lv.price:.2f}"
+                else:
+                    dash = "dot"
+                    label = f"{prefix} ${lv.price:.2f}"
                 fig.add_hline(y=lv.price, line_dash=dash, line_color=color, line_width=1.5,
                               annotation_text=label, annotation_position="right",
                               annotation_font_size=10, annotation_font_color=color,
