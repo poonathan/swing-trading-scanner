@@ -893,10 +893,7 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
     news        = payload["news"]
     pattern     = payload["pattern"]
     data        = payload["data"]
-    dark        = st.session_state.get("dark_mode", False)
-    bg_color    = "#0d1117" if dark else "white"
-    grid_color  = "#2d333b" if dark else "#f0f0f0"
-    spike_color = "#6e7681" if dark else "#999"
+    dark = st.session_state.get("dark_mode", False)
 
     # ── Signal banner ─────────────────────────────────────────────────────────
     sig_emoji = _SIG_EMOJI.get(result.signal, "⚪")
@@ -931,202 +928,71 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
 
     st.divider()
 
-    # ── Price chart + S/R overlay ─────────────────────────────────────────────
+    # ── TradingView chart ─────────────────────────────────────────────────────
     col_chart, col_pat = st.columns([3, 1], gap="large")
 
     with col_chart:
-        tf_options = {"5D": 5, "1M": 21, "3M": 63, "6M": 126, "1Y": 252, "3Y": 756, "5Y": 1260}
+        tv_range_map    = {"5D": "5D", "1M": "1M", "3M": "3M", "6M": "6M",
+                           "1Y": "12M", "3Y": "60M", "5Y": "ALL"}
+        tv_interval_map = {"5D": "D",  "1M": "D",  "3M": "D",  "6M": "D",
+                           "1Y": "D",  "3Y": "W",  "5Y": "W"}
         tf_key = f"dd_tf_{symbol}"
         if tf_key not in st.session_state:
             st.session_state[tf_key] = "3M"
 
         tf_row = st.columns([1, 1, 1, 1, 1, 1, 1, 3])
-        for i, tf_label in enumerate(tf_options):
+        for i, tf_label in enumerate(tv_range_map):
             btn_type = "primary" if st.session_state[tf_key] == tf_label else "secondary"
-            if tf_row[i].button(tf_label, use_container_width=True, type=btn_type, key=f"tf_{symbol}_{tf_label}"):
+            if tf_row[i].button(tf_label, use_container_width=True, type=btn_type,
+                                key=f"tf_{symbol}_{tf_label}"):
                 st.session_state[tf_key] = tf_label
                 st.rerun()
 
-        tf_bars = tf_options[st.session_state[tf_key]]
-        st.subheader(f"📊 Price + S/R  ·  {st.session_state[tf_key]} view",
-                     help="Green dashed = support levels · Red dashed = resistance · Purple solid = pattern key level · Orange/purple lines = SMA 50/200")
+        current_tf  = st.session_state[tf_key]
+        tv_range    = tv_range_map[current_tf]
+        tv_interval = tv_interval_map[current_tf]
+        tv_theme    = "dark" if dark else "light"
 
-        # For 3Y/5Y views fetch extended history lazily; analysis pipeline keeps 1Y data
-        hist = data.history
-        if tf_bars > 252:
-            ext_key = f"dd_hist5y_{symbol}"
-            if ext_key not in st.session_state:
-                import yfinance as yf
-                with st.spinner("Fetching extended price history…"):
-                    ext = yf.Ticker(symbol).history(period="5y", auto_adjust=True)
-                    st.session_state[ext_key] = ext if ext is not None and not ext.empty else hist
-            hist = st.session_state[ext_key]
+        # Resolve TradingView exchange prefix from yfinance exchange code
+        _exch_map = {
+            "NMS": "NASDAQ", "NGM": "NASDAQ", "NCM": "NASDAQ",
+            "NYQ": "NYSE",   "NYB": "NYSE",   "NYE": "NYSE",
+            "PCX": "AMEX",   "ASE": "AMEX",
+        }
+        _raw_exch = (data.info or {}).get("exchange", "")
+        _tv_exch  = _exch_map.get(_raw_exch, "")
+        tv_symbol = f"{_tv_exch}:{symbol}" if _tv_exch else symbol
 
-        if hist is not None and len(hist) >= 10:
-            n_bars = min(tf_bars, len(hist))
-            window = hist.iloc[-n_bars:]
-            close_full = hist["Close"].astype(float)
-            sma50  = close_full.rolling(50).mean().reindex(window.index)
-            sma200 = close_full.rolling(200).mean().reindex(window.index)
+        # Unique container ID prevents widget conflicts when switching symbols/timeframes
+        container_id = f"tv_{symbol}_{current_tf}".replace("-", "_")
 
-            fig = make_subplots(rows=2, cols=1, row_heights=[0.75, 0.25],
-                                vertical_spacing=0.03, shared_xaxes=True)
-
-            fig.add_trace(go.Candlestick(
-                x=window.index,
-                open=window["Open"], high=window["High"],
-                low=window["Low"],   close=window["Close"],
-                name="Price",
-                increasing_line_color="#27ae60", increasing_fillcolor="#27ae60",
-                decreasing_line_color="#e74c3c", decreasing_fillcolor="#e74c3c",
-                showlegend=False,
-                hovertemplate="H: %{high:.2f}  L: %{low:.2f}<extra></extra>",
-            ), row=1, col=1)
-
-            sma50_clean = sma50.dropna()
-            if not sma50_clean.empty:
-                fig.add_trace(go.Scatter(
-                    x=sma50_clean.index, y=sma50_clean, mode="lines", name="SMA 50",
-                    line=dict(color="#FF9800", width=1.5),
-                    hoverinfo="skip",
-                ), row=1, col=1)
-
-            sma200_clean = sma200.dropna()
-            if not sma200_clean.empty:
-                fig.add_trace(go.Scatter(
-                    x=sma200_clean.index, y=sma200_clean, mode="lines", name="SMA 200",
-                    line=dict(color="#9C27B0", width=1.5),
-                    hoverinfo="skip",
-                ), row=1, col=1)
-
-            # Pivot S/R: cap at 3 support + 3 resistance (strongest first, already sorted)
-            _pivot = [lv for lv in pattern.sr_levels if not lv.fib_label]
-            _fib   = [lv for lv in pattern.sr_levels if lv.fib_label]
-            _sup3  = [lv for lv in _pivot if lv.level_type in ("support", "both")][:3]
-            _res3  = [lv for lv in _pivot if lv.level_type in ("resistance", "both")][:3]
-            chart_levels = _sup3 + _res3 + _fib
-
-            for lv in chart_levels:
-                if lv.level_type == "support":
-                    color, prefix = "#27ae60", "S"
-                elif lv.level_type == "resistance":
-                    color, prefix = "#e74c3c", "R"
-                else:
-                    color, prefix = "#f39c12", "S/R"
-                if lv.fib_label:
-                    dash = "dashdot"
-                    label = f"Fib {lv.fib_label} ${lv.price:.2f}"
-                else:
-                    dash = "dot"
-                    label = f"{prefix} ${lv.price:.2f}"
-                fig.add_hline(y=lv.price, line_dash=dash, line_color=color, line_width=1.5,
-                              annotation_text=label, annotation_position="right",
-                              annotation_font_size=10, annotation_font_color=color,
-                              row=1, col=1)
-
-            # Row 1 — Pattern key levels: shaded band + bold line + triangle markers
-            for pm in pattern.patterns_detected:
-                if not pm.key_price:
-                    continue
-                kcolor = "#8e44ad" if pm.signal == "bullish" else "#c0392b"
-                sig_icon = "▲" if pm.signal == "bullish" else "▼"
-                # Highlight band ±0.8% around key level
-                fig.add_hrect(
-                    y0=pm.key_price * 0.992, y1=pm.key_price * 1.008,
-                    fillcolor=kcolor, opacity=0.12, line_width=0,
-                    row=1, col=1,
-                )
-                # Bold line with coloured annotation box
-                fig.add_hline(
-                    y=pm.key_price, line_dash="solid", line_color=kcolor, line_width=2.5,
-                    annotation_text=f" {sig_icon} {pm.name[:14]} ({pm.confidence:.0%}) ",
-                    annotation_position="left",
-                    annotation_bgcolor=kcolor,
-                    annotation_font_size=10, annotation_font_color="white",
-                    row=1, col=1,
-                )
-                # Triangle markers at bars touching the level
-                ptol = 0.015
-                if pm.signal == "bullish":
-                    mask = (window["Low"] - pm.key_price).abs() / max(pm.key_price, 0.01) < ptol
-                    y_mark = window.loc[mask, "Low"] * 0.993
-                    msym = "triangle-up"
-                else:
-                    mask = (window["High"] - pm.key_price).abs() / max(pm.key_price, 0.01) < ptol
-                    y_mark = window.loc[mask, "High"] * 1.007
-                    msym = "triangle-down"
-                if mask.any():
-                    fig.add_trace(go.Scatter(
-                        x=window.index[mask], y=y_mark, mode="markers",
-                        name=f"{sig_icon} {pm.name}",
-                        marker=dict(symbol=msym, size=13, color=kcolor,
-                                    line=dict(color="white", width=1.5)),
-                        showlegend=True,
-                    ), row=1, col=1)
-
-            vol_colors = [
-                "#27ae60" if float(c) >= float(o) else "#e74c3c"
-                for c, o in zip(window["Close"], window["Open"])
-            ]
-            fig.add_trace(go.Bar(
-                x=window.index, y=window["Volume"],
-                marker_color=vol_colors, name="Volume",
-                opacity=0.7, showlegend=False,
-                hoverinfo="skip",
-            ), row=2, col=1)
-
-            # Static OHLCV info box at top-left (updates on re-render, not on hover)
-            latest = window.iloc[-1]
-            chg = float(latest["Close"]) - float(latest["Open"])
-            chg_color = "#27ae60" if chg >= 0 else "#e74c3c"
-            ohlcv_txt = (
-                f"O {latest['Open']:.2f}  "
-                f"H {latest['High']:.2f}  "
-                f"L {latest['Low']:.2f}  "
-                f"C {latest['Close']:.2f}  "
-                f"Vol {latest['Volume']/1e6:.1f}M"
-            )
-            fig.add_annotation(
-                xref="paper", yref="paper", x=0.01, y=0.99,
-                text=ohlcv_txt, showarrow=False,
-                font=dict(size=11, color=chg_color),
-                bgcolor=bg_color, bordercolor=grid_color, borderwidth=1,
-                align="left", xanchor="left", yanchor="top",
-            )
-
-            fig.update_layout(
-                height=560, margin=dict(t=10, b=10, l=10, r=150),
-                hovermode="x",
-                dragmode="zoom",
-                spikedistance=300, hoverdistance=50,
-                plot_bgcolor=bg_color, paper_bgcolor=bg_color,
-                legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0,
-                            font=dict(size=11)),
-                xaxis_rangeslider_visible=False,
-            )
-            # Crosshair: spike lines on both axes
-            fig.update_xaxes(showgrid=True, gridcolor=grid_color,
-                             showspikes=True, spikemode="across", spikesnap="cursor",
-                             spikecolor=spike_color, spikethickness=1, spikedash="dot",
-                             row=1, col=1)
-            fig.update_xaxes(showgrid=True, gridcolor=grid_color,
-                             showspikes=True, spikemode="across", spikesnap="cursor",
-                             spikecolor=spike_color, spikethickness=1, spikedash="dot",
-                             row=2, col=1)
-            fig.update_yaxes(title_text="Price ($)", showgrid=True, gridcolor=grid_color,
-                             showspikes=True, spikecolor=spike_color,
-                             spikethickness=1, spikedash="dot",
-                             row=1, col=1)
-            fig.update_yaxes(title_text="Volume", showgrid=False, row=2, col=1)
-            st.plotly_chart(fig, use_container_width=True, config={
-                "modeBarButtonsToRemove": [
-                    "pan2d", "zoom2d", "zoomIn2d", "zoomOut2d",
-                    "lasso2d", "select2d",
-                    "hoverClosestCartesian", "hoverCompareCartesian",
-                    "toggleSpikelines",
-                ],
-                "displaylogo": False,
-            })
+        import streamlit.components.v1 as components
+        tv_html = f"""
+        <div class="tradingview-widget-container" style="height:540px;width:100%;">
+          <div id="{container_id}" style="height:100%;width:100%;"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+          <script type="text/javascript">
+          new TradingView.widget({{
+            "autosize": true,
+            "symbol": "{tv_symbol}",
+            "interval": "{tv_interval}",
+            "range": "{tv_range}",
+            "timezone": "America/New_York",
+            "theme": "{tv_theme}",
+            "style": "1",
+            "locale": "en",
+            "withdateranges": true,
+            "hide_side_toolbar": false,
+            "allow_symbol_change": false,
+            "enable_publishing": false,
+            "save_image": true,
+            "container_id": "{container_id}"
+          }});
+          </script>
+        </div>
+        """
+        st.caption("S/R levels and detected patterns are listed in the panel →")
+        components.html(tv_html, height=545)
 
     with col_pat:
         st.subheader("📐 Detected Patterns",
