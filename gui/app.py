@@ -980,7 +980,7 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                 increasing_line_color="#27ae60", increasing_fillcolor="#27ae60",
                 decreasing_line_color="#e74c3c", decreasing_fillcolor="#e74c3c",
                 showlegend=False,
-                hovertemplate="<b>%{x|%b %d, %Y}</b><br>H: %{high:.2f}  L: %{low:.2f}<extra></extra>",
+                hovertemplate="H: %{high:.2f}  L: %{low:.2f}<extra></extra>",
             ), row=1, col=1)
 
             sma50_clean = sma50.dropna()
