@@ -1518,33 +1518,42 @@ def page_deep_dive():
     st.title("🔎 Deep Dive Analysis")
     st.caption("Full single-ticker analysis — chart with S/R & patterns, fundamentals, risk/reward, analyst consensus.")
 
-    # Apply any pending symbol change BEFORE the text-input widget renders.
-    # (Setting dd_symbol_input after the widget is instantiated raises StreamlitAPIException.)
-    _pending_sym = st.session_state.pop("_dd_pick_request", None)
-    if not _pending_sym:
+    # Build dropdown options from previously analyzed symbols (persisted in session cache)
+    cached_syms = sorted(k[9:] for k in st.session_state if k.startswith("dd_cache_"))
+
+    # Consume any pending navigation/pick request BEFORE widgets render
+    _pending = st.session_state.pop("_dd_pick_request", None)
+    if not _pending:
         nav_sym = st.session_state.pop("deep_dive_nav_symbol", None)
         if nav_sym:
-            _pending_sym = nav_sym.upper().strip()
-    if _pending_sym:
-        st.session_state["dd_symbol_input"] = _pending_sym
-
+            _pending = nav_sym.upper().strip()
     auto_analyze = st.session_state.pop("dd_auto_analyze", False)
 
+    _NEW_OPT = "＋ Enter new symbol…"
+    # Include a pending symbol in options even before its first analysis
+    if _pending and _pending not in cached_syms:
+        dd_options = [_NEW_OPT, _pending] + cached_syms
+    else:
+        dd_options = [_NEW_OPT] + cached_syms
+
+    if _pending:
+        st.session_state["dd_select"] = _pending
+    elif st.session_state.get("dd_select") not in dd_options:
+        st.session_state["dd_select"] = _NEW_OPT
+
     col_sym, col_btn = st.columns([4, 1])
-    symbol = col_sym.text_input(
-        "Symbol", placeholder="NVDA", label_visibility="collapsed", key="dd_symbol_input",
-    ).upper().strip()
+    selected = col_sym.selectbox(
+        "Symbol", options=dd_options, key="dd_select", label_visibility="collapsed"
+    )
     analyze = col_btn.button("🔍 Analyze", use_container_width=True, type="primary")
 
-    # Quick-pick: recently cached analyses (persist across navigation within session)
-    cached_syms = sorted(k[9:] for k in st.session_state if k.startswith("dd_cache_"))
-    if cached_syms:
-        st.caption("Recently analyzed (click to reload):")
-        pick_cols = st.columns(min(len(cached_syms), 8))
-        for i, s in enumerate(cached_syms[:8]):
-            if pick_cols[i].button(s, key=f"dd_pick_{s}", use_container_width=True):
-                st.session_state["_dd_pick_request"] = s
-                st.rerun()
+    if selected == _NEW_OPT:
+        symbol = st.text_input(
+            "Ticker symbol", placeholder="e.g. NVDA", key="dd_new_sym",
+            label_visibility="collapsed"
+        ).upper().strip()
+    else:
+        symbol = selected
 
     # Cache age + refresh row (shown only when a cached result exists)
     cache_key = f"dd_cache_{symbol}" if symbol else None
@@ -1562,7 +1571,7 @@ def page_deep_dive():
             run_analysis = True
 
     if not symbol:
-        st.info("Enter a ticker symbol above and click **Analyze**.")
+        st.info("Select a recently analyzed symbol from the dropdown, or choose **＋ Enter new symbol…** and type a ticker, then click **Analyze**.")
         return
 
     # Serve from cache when not re-running
@@ -1571,7 +1580,7 @@ def page_deep_dive():
         return
 
     if not run_analysis:
-        st.info("Enter a ticker symbol above and click **Analyze**.")
+        st.info(f"Click **Analyze** to run a full analysis for **{symbol}**.")
         return
 
     from data.fetcher import fetch
