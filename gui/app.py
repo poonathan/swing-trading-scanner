@@ -980,6 +980,7 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                 increasing_line_color="#27ae60", increasing_fillcolor="#27ae60",
                 decreasing_line_color="#e74c3c", decreasing_fillcolor="#e74c3c",
                 showlegend=False,
+                hoverinfo="skip",
             ), row=1, col=1)
 
             sma50_clean = sma50.dropna()
@@ -987,7 +988,7 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                 fig.add_trace(go.Scatter(
                     x=sma50_clean.index, y=sma50_clean, mode="lines", name="SMA 50",
                     line=dict(color="#FF9800", width=1.5),
-                    hovertemplate="SMA50: $%{y:.2f}<extra></extra>",
+                    hoverinfo="skip",
                 ), row=1, col=1)
 
             sma200_clean = sma200.dropna()
@@ -995,7 +996,7 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                 fig.add_trace(go.Scatter(
                     x=sma200_clean.index, y=sma200_clean, mode="lines", name="SMA 200",
                     line=dict(color="#9C27B0", width=1.5),
-                    hovertemplate="SMA200: $%{y:.2f}<extra></extra>",
+                    hoverinfo="skip",
                 ), row=1, col=1)
 
             # Pivot S/R: cap at 3 support + 3 resistance (strongest first, already sorted)
@@ -1071,13 +1072,33 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                 x=window.index, y=window["Volume"],
                 marker_color=vol_colors, name="Volume",
                 opacity=0.7, showlegend=False,
-                hovertemplate="Vol: %{y:,.0f}<extra></extra>",
+                hoverinfo="skip",
             ), row=2, col=1)
+
+            # Static OHLCV info box at top-left (updates on re-render, not on hover)
+            latest = window.iloc[-1]
+            chg = float(latest["Close"]) - float(latest["Open"])
+            chg_color = "#27ae60" if chg >= 0 else "#e74c3c"
+            ohlcv_txt = (
+                f"O {latest['Open']:.2f}  "
+                f"H {latest['High']:.2f}  "
+                f"L {latest['Low']:.2f}  "
+                f"C {latest['Close']:.2f}  "
+                f"Vol {latest['Volume']/1e6:.1f}M"
+            )
+            fig.add_annotation(
+                xref="paper", yref="paper", x=0.01, y=0.99,
+                text=ohlcv_txt, showarrow=False,
+                font=dict(size=11, color=chg_color),
+                bgcolor=bg_color, bordercolor=grid_color, borderwidth=1,
+                align="left", xanchor="left", yanchor="top",
+            )
 
             fig.update_layout(
                 height=560, margin=dict(t=10, b=10, l=10, r=150),
-                hovermode="x unified",
-                spikedistance=200, hoverdistance=50,
+                hovermode="x",
+                dragmode="zoom",
+                spikedistance=300, hoverdistance=50,
                 plot_bgcolor=bg_color, paper_bgcolor=bg_color,
                 legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0,
                             font=dict(size=11)),
@@ -1097,7 +1118,15 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                              spikethickness=1, spikedash="dot",
                              row=1, col=1)
             fig.update_yaxes(title_text="Volume", showgrid=False, row=2, col=1)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={
+                "modeBarButtonsToRemove": [
+                    "pan2d", "zoom2d", "zoomIn2d", "zoomOut2d",
+                    "autoScale2d", "lasso2d", "select2d",
+                    "hoverClosestCartesian", "hoverCompareCartesian",
+                    "toggleSpikelines",
+                ],
+                "displaylogo": False,
+            })
 
     with col_pat:
         st.subheader("📐 Detected Patterns",
