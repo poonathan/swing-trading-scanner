@@ -935,12 +935,12 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
     col_chart, col_pat = st.columns([3, 1], gap="large")
 
     with col_chart:
-        tf_options = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252}
+        tf_options = {"5D": 5, "1M": 21, "3M": 63, "6M": 126, "1Y": 252, "3Y": 756, "5Y": 1260}
         tf_key = f"dd_tf_{symbol}"
         if tf_key not in st.session_state:
             st.session_state[tf_key] = "3M"
 
-        tf_row = st.columns([1, 1, 1, 1, 6])
+        tf_row = st.columns([1, 1, 1, 1, 1, 1, 1, 3])
         for i, tf_label in enumerate(tf_options):
             btn_type = "primary" if st.session_state[tf_key] == tf_label else "secondary"
             if tf_row[i].button(tf_label, use_container_width=True, type=btn_type, key=f"tf_{symbol}_{tf_label}"):
@@ -951,7 +951,17 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
         st.subheader(f"📊 Price + S/R  ·  {st.session_state[tf_key]} view",
                      help="Green dashed = support levels · Red dashed = resistance · Purple solid = pattern key level · Orange/purple lines = SMA 50/200")
 
+        # For 3Y/5Y views fetch extended history lazily; analysis pipeline keeps 1Y data
         hist = data.history
+        if tf_bars > 252:
+            ext_key = f"dd_hist5y_{symbol}"
+            if ext_key not in st.session_state:
+                import yfinance as yf
+                with st.spinner("Fetching extended price history…"):
+                    ext = yf.Ticker(symbol).history(period="5y", auto_adjust=True)
+                    st.session_state[ext_key] = ext if ext is not None and not ext.empty else hist
+            hist = st.session_state[ext_key]
+
         if hist is not None and len(hist) >= 10:
             n_bars = min(tf_bars, len(hist))
             window = hist.iloc[-n_bars:]
