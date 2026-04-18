@@ -980,7 +980,7 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
                 increasing_line_color="#27ae60", increasing_fillcolor="#27ae60",
                 decreasing_line_color="#e74c3c", decreasing_fillcolor="#e74c3c",
                 showlegend=False,
-                hoverinfo="skip",
+                hovertemplate="<b>%{x|%b %d, %Y}</b><br>H: %{high:.2f}  L: %{low:.2f}<extra></extra>",
             ), row=1, col=1)
 
             sma50_clean = sma50.dropna()
@@ -1121,7 +1121,7 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
             st.plotly_chart(fig, use_container_width=True, config={
                 "modeBarButtonsToRemove": [
                     "pan2d", "zoom2d", "zoomIn2d", "zoomOut2d",
-                    "autoScale2d", "lasso2d", "select2d",
+                    "lasso2d", "select2d",
                     "hoverClosestCartesian", "hoverCompareCartesian",
                     "toggleSpikelines",
                 ],
@@ -1244,10 +1244,18 @@ def _render_dd_content(symbol: str, payload: dict) -> None:
             mc2.metric("Employees",    f"{info['fullTimeEmployees']:,}" if info.get("fullTimeEmployees") else "—")
             mc3.metric("Avg Vol (3M)", _fmt_vol(info.get("averageVolume")),
                        help="Average daily trading volume over the past 3 months")
-            mc4.metric("Exchange",     info.get("exchange", "—"))
+            _ov_close = data.history["Close"].astype(float) if data.history is not None and len(data.history) >= 63 else None
+            if _ov_close is not None:
+                _tp = (float(_ov_close.iloc[-1]) - float(_ov_close.iloc[-63])) / float(_ov_close.iloc[-63])
+                _trend_lbl = "↑ Uptrend" if _tp > 0.05 else ("↓ Downtrend" if _tp < -0.05 else "→ Sideways")
+            else:
+                _trend_lbl = "—"
+            mc4.metric("Trend", _trend_lbl, help="Price direction over the past 3 months (±5% threshold)")
             mc5, mc6, mc7, mc8 = st.columns(4)
-            mc5.metric("Country",  info.get("country", "—"))
-            mc6.metric("Currency", info.get("currency", "USD"))
+            mc5.metric("Country", info.get("country", "—"))
+            _sig = result.signal
+            _sig_lbl = "🟢 BUY DIP" if _sig == "BUY_DIP" else ("🟡 WATCH" if _sig == "WATCH" else "⚪ AVOID")
+            mc6.metric("Signal", _sig_lbl, help="Composite signal from the latest Deep Dive analysis")
             mc7.metric("Avg Vol (10d)", _fmt_vol(info.get("averageVolume10days")),
                        help="Average daily volume over the past 10 days vs. 3-month average — elevated = increased interest")
             site = info.get("website", "")
